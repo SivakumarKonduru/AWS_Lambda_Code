@@ -1,0 +1,46 @@
+import boto3
+from datetime import timedelta
+from datetime import datetime, timezone
+
+# Initialize S3 client
+s3_client = boto3.client('s3')
+
+# Define your source and destination buckets
+SOURCE_BUCKET = 'terraformvmimporttest'
+DESTINATION_BUCKET = 'secondarybucket'
+
+# Define the time window for recent files
+# This example uses the last 24 hours
+TIME_WINDOW = 24  # hours
+
+def lambda_handler(event, context):
+    now = datetime.now(timezone.utc)
+    time_threshold = now - timedelta(hours=TIME_WINDOW)
+
+    # List objects in the source bucket
+    response = s3_client.list_objects_v2(Bucket=SOURCE_BUCKET)
+    if 'Contents' not in response:
+        return {
+            'statusCode': 200,
+            'body': 'No files found in the source bucket.'
+        }
+
+    for obj in response['Contents']:
+        # Get object key and last modified time
+        key = obj['Key']
+        last_modified = obj['LastModified']
+
+        # Check if the object is within the time window
+        if last_modified >= time_threshold:
+            # Copy the object
+            copy_source = {'Bucket': SOURCE_BUCKET, 'Key': key}
+            s3_client.copy_object(
+                CopySource=copy_source,
+                Bucket=DESTINATION_BUCKET,
+                Key=key
+            )
+
+    return {
+        'statusCode': 200,
+        'body': 'Recent files copied successfully.'
+    }
