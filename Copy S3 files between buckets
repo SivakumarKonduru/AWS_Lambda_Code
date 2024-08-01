@@ -7,7 +7,7 @@ s3_client = boto3.client('s3')
 
 # Define your source and destination buckets
 SOURCE_BUCKET = 'terraformvmimporttest'
-DESTINATION_BUCKET = 'secondarybucket'
+DESTINATION_BUCKET = 'destinationbucketvmimport'
 
 # Define the time window for recent files
 # This example uses the last 24 hours
