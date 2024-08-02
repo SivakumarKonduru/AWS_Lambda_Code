@@ -1,0 +1,35 @@
+import boto3
+import os
+
+# Initialize clients for the source and destination regions
+s3_source_client = boto3.client('s3', region_name='source-region-name')
+s3_dest_client = boto3.client('s3', region_name='destination-region-name')
+
+# Source and destination bucket names
+SOURCE_BUCKET = 'source-bucket-name'
+DESTINATION_BUCKET = 'destination-bucket-name'
+
+def lambda_handler(event, context):
+    try:
+        # List objects in the source bucket (adjust the Prefix if needed)
+        response = s3_source_client.list_objects_v2(Bucket=SOURCE_BUCKET)
+        if 'Contents' in response:
+            for obj in response['Contents']:
+                key = obj['Key']
+                print(f"Copying {key} from {SOURCE_BUCKET} to {DESTINATION_BUCKET}")
+
+                # Copy the object
+                copy_source = {'Bucket': SOURCE_BUCKET, 'Key': key}
+                s3_dest_client.copy(copy_source, DESTINATION_BUCKET, key)
+                print(f"Copied {key} successfully")
+
+        return {
+            'statusCode': 200,
+            'body': 'Files copied successfully'
+        }
+    except Exception as e:
+        print(f"Error: {str(e)}")
+        return {
+            'statusCode': 500,
+            'body': str(e)
+        }
