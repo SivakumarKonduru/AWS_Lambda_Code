@@ -1,0 +1,21 @@
+#!/bin/bash
+
+# Array of container JSON files
+containers=("container1.json" "container2.json" "container3.json" "container4.json")
+
+# Function to convert OVA to AMI using AWS CLI
+convert_to_ami() {
+    json_file=$1
+    echo "Starting conversion for $json_file..."
+    aws ec2 import-image --disk-containers file://$json_file
+    echo "Conversion for $json_file started."
+}
+
+# Run the conversions in parallel
+for container in "${containers[@]}"; do
+    convert_to_ami "$container" &
+done
+
+# Wait for all background processes to finish
+wait
+echo "All conversions initiated."
