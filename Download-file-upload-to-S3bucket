@@ -1,49 +1,82 @@
-import boto3
 import requests
-from botocore.exceptions import NoCredentialsError
+import boto3
+from tqdm import tqdm
+from botocore.exceptions import NoCredentialsError, ClientError
+import os
 
-def download_file_from_website(url, local_filename):
-    """Download a file from a website to the local file system."""
-    response = requests.get(url)
+def download_file(url, local_filename):
+    """Download a file from a URL to the local file system with progress bar."""
+    response = requests.get(url, stream=True)
+    total_size = int(response.headers.get('content-length', 0))
+    chunk_size = 1024
+    
+    progress = tqdm(total=total_size, unit='B', unit_scale=True, desc=local_filename)
+
+    with open(local_filename, 'wb') as file:
+        for data in response.iter_content(chunk_size=chunk_size):
+            file.write(data)
+            progress.update(len(data))
+
+    progress.close()
+
     if response.status_code == 200:
-        with open(local_filename, 'wb') as f:
-            f.write(response.content)
         print(f"Downloaded file from {url} to {local_filename}")
     else:
         print(f"Failed to download file from {url}, status code: {response.status_code}")
         raise Exception(f"Failed to download file, status code: {response.status_code}")
 
-def upload_file_to_s3(local_filename, bucket, s3_filename=None):
-    """Upload a file from the local file system to an S3 bucket."""
+def upload_file_to_s3(file_name, bucket, object_name=None):
+    """Upload a file to an S3 bucket with a progress bar."""
     s3 = boto3.client('s3')
-    if s3_filename is None:
-        s3_filename = local_filename
+
+    if object_name is None:
+        object_name = os.path.basename(file_name)
+
+    file_size = os.stat(file_name).st_size
+    progress = tqdm(total=file_size, unit='B', unit_scale=True, desc=file_name)
+
+    def upload_progress(chunk):
+        progress.update(chunk)
 
     try:
-        s3.upload_file(local_filename, bucket, s3_filename)
-        print(f"Uploaded file {local_filename} to S3 bucket {bucket} as {s3_filename}")
+        s3.upload_file(file_name, bucket, object_name, Callback=upload_progress)
+        print(f"Uploaded file {file_name} to S3 bucket {bucket} as {object_name}")
+        return True
     except FileNotFoundError:
         print("The file was not found")
-        raise
+        return False
     except NoCredentialsError:
         print("Credentials not available")
-        raise
+        return False
+    except ClientError as e:
+        print(f"Failed to upload {file_name} to {bucket}/{object_name}: {e}")
+        return False
+    finally:
+        progress.close()
 
 def main():
-    # URL of the file to download
-    url = 'https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.6.7/npp.8.6.7.Installer.x64.exe'  # Replace with the actual file URL
-    # Local file path to save the downloaded file
-    local_filename = 'Notepadnew'
+    # URL of the OVA file to download
+    ova_url = 'https://example.com/path/to/your/file.ova'  # Replace with the actual OVA file URL
+    # Local file path to save the downloaded OVA file
+    local_filename = 'downloaded_file.ova'
     # S3 bucket name
-    bucket_name = 'secondarybucket'  # Replace with your S3 bucket name
-    # S3 object name (optional)
-    s3_filename = 'Test/'  # Replace with the desired S3 object name
+    bucket_name = 'your-s3-bucket-name'  # Replace with your S3 bucket name
+    # Optional: specify an S3 object name; if not provided, the file name is used
+    s3_object_name = 'folder-in-bucket/file.ova'  # Example: 'uploads/file.ova'
 
-    # Download the file from the website
-    download_file_from_website(url, local_filename)
-    
-    # Upload the downloaded file to S3
-    upload_file_to_s3(local_filename, bucket_name, s3_filename)
+    try:
+        # Step 1: Download the OVA file from the URL
+        download_file(ova_url, local_filename)
+        
+        # Step 2: Upload the downloaded OVA file to S3
+        success = upload_file_to_s3(local_filename, bucket_name, s3_object_name)
+        
+        if success:
+            print("Upload completed successfully.")
+        else:
+            print("Upload failed.")
+    except Exception as e:
+        print(f"An error occurred: {e}")
 
 if __name__ == "__main__":
     main()
