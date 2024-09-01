@@ -1,0 +1,65 @@
+import boto3
+from botocore.exceptions import NoCredentialsError, ClientError
+from tqdm import tqdm
+import os
+
+def upload_file_with_progress(file_name, bucket, object_name=None):
+    """Upload a file to an S3 bucket with a progress bar.
+
+    :param file_name: File to upload
+    :param bucket: Bucket to upload to
+    :param object_name: S3 object name. If not specified, file_name is used
+    :return: True if file was uploaded, else False
+    """
+    s3 = boto3.client('s3')
+    
+    if object_name is None:
+        object_name = os.path.basename(file_name)
+    
+    # Get file size
+    file_size = os.stat(file_name).st_size
+    
+    # Progress bar setup
+    progress = tqdm(total=file_size, unit='B', unit_scale=True, desc=file_name)
+
+    def upload_progress(chunk):
+        progress.update(chunk)
+
+    try:
+        # Upload the file with progress callback
+        s3.upload_file(
+            file_name, bucket, object_name, 
+            Callback=upload_progress
+        )
+        print(f"File {file_name} uploaded to {bucket}/{object_name}")
+        return True
+    except FileNotFoundError:
+        print("The file was not found")
+        return False
+    except NoCredentialsError:
+        print("Credentials not available")
+        return False
+    except ClientError as e:
+        print(f"Failed to upload {file_name} to {bucket}/{object_name}: {e}")
+        return False
+    finally:
+        progress.close()
+
+def main():
+    # Replace with the path to your OVA file
+    file_name = 'file path'
+    # Replace with your S3 bucket name
+    bucket_name = 'bucket-name'
+    # Optional: specify an S3 object name; if not provided, the file name is used
+   # s3_object_name =  'uploads/file.ova' # Example: 'uploads/file.ova'
+
+    # Upload the OVA file to S3
+    success = upload_file_with_progress(file_name, bucket_name)
+    
+    if success:
+        print("Upload completed successfully.")
+    else:
+        print("Upload failed.")
+
+if __name__ == "__main__":
+    main()
