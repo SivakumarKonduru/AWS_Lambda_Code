@@ -47,9 +47,9 @@ def upload_file_with_progress(file_name, bucket, object_name=None):
 
 def main():
     # Replace with the path to your OVA file
-    file_name = 'file path'
+    file_name = 'D:\Screenshot (35).png'
     # Replace with your S3 bucket name
-    bucket_name = 'bucket-name'
+    bucket_name = 'terraformvmimporttest'
     # Optional: specify an S3 object name; if not provided, the file name is used
    # s3_object_name =  'uploads/file.ova' # Example: 'uploads/file.ova'
 

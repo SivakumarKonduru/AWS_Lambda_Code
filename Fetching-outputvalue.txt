@@ -1,0 +1,55 @@
+import boto3
+from botocore.exceptions import NoCredentialsError
+
+def fetch_value_from_file(file_path):
+    """
+    Fetch the value from the previous output file.
+
+    :param file_path: Path to the file from which to read the value
+    :return: The value as a string
+    """
+    with open(file_path, 'r') as file:
+        value = file.read().strip()  # Read and strip any extra whitespace
+    return value
+
+def upload_to_s3(file_name, bucket_name, object_name=None):
+    """
+    Upload a file to an S3 bucket.
+
+    :param file_name: File to upload
+    :param bucket_name: Bucket to upload to
+    :param object_name: S3 object name. If not specified, file_name is used
+    :return: True if file was uploaded, else False
+    """
+    if object_name is None:
+        object_name = file_name
+
+    s3_client = boto3.client('s3')
+
+    try:
+        s3_client.upload_file(file_name, bucket_name, object_name)
+        print(f"File '{file_name}' uploaded to '{bucket_name}/{object_name}'")
+        return True
+    except FileNotFoundError:
+        print(f"The file '{file_name}' was not found")
+        return False
+    except NoCredentialsError:
+        print("Credentials not available")
+        return False
+
+# Example usage:
+previous_output_file = 'previous_output.txt'  # Replace with your previous output file
+value_from_previous_file = fetch_value_from_file(previous_output_file)
+
+# Create a new file name using the fetched value
+new_file_name = f'new_file_{value_from_previous_file}.txt'
+
+# Write some data to the new file (for example purposes)
+with open(new_file_name, 'w') as new_file:
+    new_file.write(f"This file was created using value: {value_from_previous_file}")
+
+# Specify your S3 bucket name
+bucket_name = 'your-s3-bucket'  # Replace with your S3 bucket name
+
+# Upload the new file to S3
+upload_to_s3(new_file_name, bucket_name)
