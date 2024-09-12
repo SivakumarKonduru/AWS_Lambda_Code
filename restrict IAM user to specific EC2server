@@ -22,7 +22,7 @@
 				"ec2:StopInstances"
 			],
 			"Resource": [
-				"arn:aws:ec2:us-east-1:207851844325:instance/i-0c0534fdde1e3e13e"
+				"arn:aws:ssm:<REGION>:<ACCOUNT_ID>:instance/<INSTANCE_ID>"
 			]
 		},
 		{
