@@ -1,36 +1,36 @@
 {
-    "Version": "2012-10-17",
-    "Statement": [
-        {
-            "Effect": "Allow",
-            "Action": [
-                "ssm:StartSession",
-                "ssm:TerminateSession",
-                "ssm:ResumeSession"
-            ],
-            "Resource": [
-                "arn:aws:ssm:<REGION>:<ACCOUNT_ID>:instance/<INSTANCE_ID>"
-            ]
-        },
-        {
-            "Effect": "Allow",
-            "Action": [
-                "ssm:DescribeInstanceInformation",
-                "ssm:DescribeSessions",
-                "ssm:GetConnectionStatus"
-            ],
-            "Resource": "*"
-        },
-        {
-            "Effect": "Allow",
-            "Action": [
-                "ec2:DescribeInstances",
-                "ec2:DescribeInstanceStatus",
-                "ec2:DescribeTags"
-            ],
-            "Resource": [
-                "arn:aws:ec2:<REGION>:<ACCOUNT_ID>:instance/<INSTANCE_ID>"
-            ]
-        }
-    ]
+	"Version": "2012-10-17",
+	"Statement": [
+		{
+			"Effect": "Allow",
+			"Action": [
+				"ssm:StartSession",
+				"ssm:TerminateSession",
+				"ssm:ResumeSession"
+			],
+			"Resource": "*"
+		},
+		{
+			"Effect": "Allow",
+			"Action": "ssm:DescribeSessions",
+			"Resource": "*"
+		},
+		{
+			"Effect": "Allow",
+			"Action": [
+				"ec2:StartInstances",
+				"ec2:StopInstances"
+			],
+			"Resource": [
+				"arn:aws:ec2:us-east-1:207851844325:instance/i-0c0534fdde1e3e13e"
+			]
+		},
+		{
+			"Effect": "Allow",
+			"Action": [
+				"ec2:DescribeInstances"
+			],
+			"Resource": "*"
+		}
+	]
 }
