@@ -7,15 +7,11 @@ import math
 # Initialize the S3 client
 s3_client = boto3.client('s3')
 
-# Function to upload large files to S3 using multipart upload
 def multipart_upload_from_url_to_s3(bucket_name, s3_key, download_url):
     try:
         # Start the multipart upload
         multipart_upload = s3_client.create_multipart_upload(Bucket=bucket_name, Key=s3_key)
-        upload_id = multipart_upload.get('UploadId')
-
-        if upload_id is None:
-            raise ValueError("Failed to create multipart upload. No UploadId returned.")
+        upload_id = multipart_upload['UploadId']
 
         part_number = 1
         part_info = {'Parts': []}
@@ -25,21 +21,19 @@ def multipart_upload_from_url_to_s3(bucket_name, s3_key, download_url):
         session = requests.Session()
         session.mount('https://', HTTPAdapter(max_retries=retries))
 
-        # Stream the file from the URL without relying on Content-Length
+        # Stream the file from the URL
         response = session.get(download_url, stream=True)
         response.raise_for_status()  # Check for download errors
 
-        # Set part size to dynamically scale based on file size, starting at 500MB
-        part_size = 500 * 1024 * 1024  # 500MB
-
-        # If content-length header is available, adjust part size based on file size
+        # Get content-length to dynamically calculate part size
         total_size = int(response.headers.get('content-length', 0))
         if total_size > 0:
-            # Ensure we have a part size that results in fewer than 10,000 parts
-            part_size = max(part_size, math.ceil(total_size / 10000))
-            print(f"Adjusted part size: {part_size / (1024 * 1024)} MB")
+            # Dynamically calculate part size based on total file size
+            part_size = max(math.ceil(total_size / 10000), 500 * 1024 * 1024)  # Set part size to at least 500MB
         else:
-            print("Content-Length header is not available. Proceeding with default part size of 500MB.")
+            part_size = 500 * 1024 * 1024  # Default to 500MB if Content-Length is not available
+
+        print(f"Part size: {part_size / (1024 * 1024)} MB")
 
         # Read the file in chunks and upload each part to S3
         for chunk in response.iter_content(chunk_size=part_size):
@@ -56,7 +50,7 @@ def multipart_upload_from_url_to_s3(bucket_name, s3_key, download_url):
                         UploadId=upload_id
                     )
 
-                    etag = s3_response.get('ETag')
+                    etag = s3_response['ETag']
                     if etag is None:
                         raise ValueError(f"Failed to upload part {part_number}. No ETag returned.")
 
@@ -88,7 +82,7 @@ def multipart_upload_from_url_to_s3(bucket_name, s3_key, download_url):
     except Exception as e:
         print(f"Error during multipart upload: {e}")
         # If there's an error, abort the multipart upload
-        if 'UploadId' in locals():
+        if 'upload_id' in locals():
             s3_client.abort_multipart_upload(Bucket=bucket_name, Key=s3_key, UploadId=upload_id)
 
     # If the upload fails, return None values
