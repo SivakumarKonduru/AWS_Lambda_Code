@@ -1,41 +1,58 @@
 import boto3
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import math
 
 # Initialize the S3 client
 s3_client = boto3.client('s3')
 
-# Function to stream the OVA file from the URL and upload it to S3 in parts
+# Function to upload large files to S3 using multipart upload
 def multipart_upload_from_url_to_s3(bucket_name, s3_key, download_url):
     try:
         # Start the multipart upload
         multipart_upload = s3_client.create_multipart_upload(Bucket=bucket_name, Key=s3_key)
-        upload_id = multipart_upload['UploadId']
+        upload_id = multipart_upload.get('UploadId')
+
+        if upload_id is None:
+            raise ValueError("Failed to create multipart upload. No UploadId returned.")
+
         part_number = 1
         part_info = {'Parts': []}
-
-        # Set the part size (e.g., 5MB minimum for multipart upload)
-        part_size = 5 * 1024 * 1024  # 5 MB
 
         # Set up retries for the download request
         retries = Retry(total=5, backoff_factor=0.3, status_forcelist=[500, 502, 503, 504])
         session = requests.Session()
         session.mount('https://', HTTPAdapter(max_retries=retries))
 
-        # Stream the file from the URL with retry
+        # Stream the file from the URL
         response = session.get(download_url, stream=True)
         response.raise_for_status()  # Check for download errors
 
-        # Total size of the file (for logging progress)
+        # Get total file size from the 'Content-Length' header
         total_size = int(response.headers.get('content-length', 0))
-        num_parts = math.ceil(total_size / part_size)
+        if total_size == 0:
+            raise ValueError("The file size is 0 or 'Content-Length' header is missing. Cannot proceed.")
 
-        print(f"Downloading file of size {total_size} bytes in {num_parts} parts.")
+        # Calculate the minimum part size
+        max_parts = 10000
+        part_size = max(50 * 1024 * 1024, math.ceil(total_size / max_parts))  # Set part size to at least 50MB or calculated size
+
+        print(f"Total file size: {total_size} bytes")
+        print(f"Part size: {part_size / (1024 * 1024)} MB")
+        
+        num_parts = math.ceil(total_size / part_size)
+        print(f"Total parts: {num_parts}")
+
+        if num_parts > max_parts:
+            raise ValueError(f"Cannot upload file with {num_parts} parts, exceeds 10,000 part limit.")
 
         # Read the file in chunks and upload each part to S3
         for chunk in response.iter_content(chunk_size=part_size):
-            if chunk:  # Ensure the chunk is not empty
+            if chunk:
                 try:
+                    print(f"Uploading part {part_number}...")
+
                     # Upload each chunk as a part
                     s3_response = s3_client.upload_part(
                         Body=chunk,
@@ -45,13 +62,16 @@ def multipart_upload_from_url_to_s3(bucket_name, s3_key, download_url):
                         UploadId=upload_id
                     )
 
+                    etag = s3_response.get('ETag')
+                    if etag is None:
+                        raise ValueError(f"Failed to upload part {part_number}. No ETag returned.")
+
                     # Record the part number and ETag for later completion
                     part_info['Parts'].append({
                         'PartNumber': part_number,
-                        'ETag': s3_response['ETag']
+                        'ETag': etag
                     })
 
-                    print(f"Uploaded part {part_number} of {num_parts}")
                     part_number += 1
                 except Exception as upload_error:
                     print(f"Error uploading part {part_number}: {upload_error}")
@@ -66,16 +86,30 @@ def multipart_upload_from_url_to_s3(bucket_name, s3_key, download_url):
         )
         print(f"Multipart upload completed successfully for {s3_key}")
 
+        # Return bucket name and s3 key on successful upload
+        return bucket_name, s3_key
+
     except requests.exceptions.RequestException as download_error:
         print(f"Error downloading file: {download_error}")
     except Exception as e:
         print(f"Error during multipart upload: {e}")
         # If there's an error, abort the multipart upload
-        s3_client.abort_multipart_upload(Bucket=bucket_name, Key=s3_key, UploadId=upload_id)
+        if 'UploadId' in locals():
+            s3_client.abort_multipart_upload(Bucket=bucket_name, Key=s3_key, UploadId=upload_id)
+
+    # If the upload fails, return None values
+    return None, None
 
 # Example usage
 bucket_name = "your-s3-bucket-name"
 s3_key = "path-in-s3/your-ova-file.ova"  # S3 key (file name in S3)
 download_url = "https://example.com/path-to-ova-file.ova"  # URL to download the OVA file
 
-multipart_upload_from_url_to_s3(bucket_name, s3_key, download_url)
+# Call the function and store the returned values
+returned_bucket, returned_s3_key = multipart_upload_from_url_to_s3(bucket_name, s3_key, download_url)
+
+# Check if the upload was successful
+if returned_bucket and returned_s3_key:
+    print(f"File successfully uploaded to bucket: {returned_bucket}, key: {returned_s3_key}")
+else:
+    print("File upload failed.")
