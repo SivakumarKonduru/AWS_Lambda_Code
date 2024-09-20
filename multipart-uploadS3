@@ -29,11 +29,17 @@ def multipart_upload_from_url_to_s3(bucket_name, s3_key, download_url):
         response = session.get(download_url, stream=True)
         response.raise_for_status()  # Check for download errors
 
-        # Set a default part size (minimum 50MB to avoid too many parts)
-        part_size = 50 * 1024 * 1024  # 50 MB
+        # Set part size to dynamically scale based on file size, starting at 500MB
+        part_size = 500 * 1024 * 1024  # 500MB
 
-        # Track uploaded parts
-        print(f"Starting upload for file {s3_key}...")
+        # If content-length header is available, adjust part size based on file size
+        total_size = int(response.headers.get('content-length', 0))
+        if total_size > 0:
+            # Ensure we have a part size that results in fewer than 10,000 parts
+            part_size = max(part_size, math.ceil(total_size / 10000))
+            print(f"Adjusted part size: {part_size / (1024 * 1024)} MB")
+        else:
+            print("Content-Length header is not available. Proceeding with default part size of 500MB.")
 
         # Read the file in chunks and upload each part to S3
         for chunk in response.iter_content(chunk_size=part_size):
