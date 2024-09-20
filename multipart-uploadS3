@@ -17,8 +17,13 @@ def multipart_upload_from_url_to_s3(bucket_name, s3_key, download_url):
         # Set the part size (e.g., 5MB minimum for multipart upload)
         part_size = 5 * 1024 * 1024  # 5 MB
 
-        # Stream the file from the URL
-        response = requests.get(download_url, stream=True)
+        # Set up retries for the download request
+        retries = Retry(total=5, backoff_factor=0.3, status_forcelist=[500, 502, 503, 504])
+        session = requests.Session()
+        session.mount('https://', HTTPAdapter(max_retries=retries))
+
+        # Stream the file from the URL with retry
+        response = session.get(download_url, stream=True)
         response.raise_for_status()  # Check for download errors
 
         # Total size of the file (for logging progress)
@@ -29,26 +34,28 @@ def multipart_upload_from_url_to_s3(bucket_name, s3_key, download_url):
 
         # Read the file in chunks and upload each part to S3
         for chunk in response.iter_content(chunk_size=part_size):
-            if not chunk:
-                break
+            if chunk:  # Ensure the chunk is not empty
+                try:
+                    # Upload each chunk as a part
+                    s3_response = s3_client.upload_part(
+                        Body=chunk,
+                        Bucket=bucket_name,
+                        Key=s3_key,
+                        PartNumber=part_number,
+                        UploadId=upload_id
+                    )
 
-            # Upload each chunk as a part
-            s3_response = s3_client.upload_part(
-                Body=chunk,
-                Bucket=bucket_name,
-                Key=s3_key,
-                PartNumber=part_number,
-                UploadId=upload_id
-            )
+                    # Record the part number and ETag for later completion
+                    part_info['Parts'].append({
+                        'PartNumber': part_number,
+                        'ETag': s3_response['ETag']
+                    })
 
-            # Record the part number and ETag for later completion
-            part_info['Parts'].append({
-                'PartNumber': part_number,
-                'ETag': s3_response['ETag']
-            })
-
-            print(f"Uploaded part {part_number} of {num_parts}")
-            part_number += 1
+                    print(f"Uploaded part {part_number} of {num_parts}")
+                    part_number += 1
+                except Exception as upload_error:
+                    print(f"Error uploading part {part_number}: {upload_error}")
+                    raise  # Re-raise the error to trigger multipart abort
 
         # Complete the multipart upload after all parts are uploaded
         s3_client.complete_multipart_upload(
@@ -59,11 +66,12 @@ def multipart_upload_from_url_to_s3(bucket_name, s3_key, download_url):
         )
         print(f"Multipart upload completed successfully for {s3_key}")
 
+    except requests.exceptions.RequestException as download_error:
+        print(f"Error downloading file: {download_error}")
     except Exception as e:
         print(f"Error during multipart upload: {e}")
         # If there's an error, abort the multipart upload
         s3_client.abort_multipart_upload(Bucket=bucket_name, Key=s3_key, UploadId=upload_id)
-
 
 # Example usage
 bucket_name = "your-s3-bucket-name"
