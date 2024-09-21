@@ -4,14 +4,15 @@ import math
 import time
 from botocore.exceptions import NoCredentialsError, PartialCredentialsError
 
-def download_and_upload_to_s3(url, s3_bucket, s3_key, max_retries=5, backoff_factor=0.5):
+def download_and_upload_to_s3(url, s3_bucket, s3_key, default_chunk_size=500 * 1024 * 1024, max_retries=5, backoff_factor=0.5):
     """
-    Downloads a file from a URL and uploads it to S3 bucket using multipart upload.
-    Dynamically calculates chunk sizes based on file size or uses a fallback chunk size.
-    
+    Downloads a file from a URL and uploads it to an S3 bucket using multipart upload.
+    Ensures that the number of parts does not exceed the 10,000 part limit by adjusting chunk sizes.
+
     :param url: URL of the file to download.
     :param s3_bucket: The target S3 bucket name.
     :param s3_key: The key (path) for the file in the S3 bucket.
+    :param default_chunk_size: Default chunk size (500MB by default).
     :param max_retries: Maximum retries for failed uploads.
     :param backoff_factor: Exponential backoff factor for retries.
     :return: Tuple with S3 bucket and key, or None if failed.
@@ -19,25 +20,22 @@ def download_and_upload_to_s3(url, s3_bucket, s3_key, max_retries=5, backoff_fac
     s3_client = boto3.client('s3')
 
     try:
-        # Make a HEAD request to get file size
+        # Try to get the file size from the URL's headers
         head_response = requests.head(url, timeout=30)
         file_size = int(head_response.headers.get('Content-Length', 0))
 
         if file_size == 0:
-            print("Warning: Failed to determine file size from URL. Defaulting to larger chunk sizes.")
-            # If file size is unknown, set an arbitrary large chunk size
-            chunk_size = 100 * 1024 * 1024  # 100 MB
+            print("Warning: Failed to determine file size from URL. Using large default chunk size of 500MB.")
+            chunk_size = default_chunk_size  # If file size is unknown, use 500MB as the default chunk size
         else:
             print(f"File size: {file_size / (1024 * 1024)} MB")
-
             # Calculate optimal chunk size to avoid exceeding 10,000 parts
             max_parts = 10_000
-            min_part_size = 5 * 1024 * 1024  # 5MB minimum S3 part size
-            chunk_size = max(min_part_size, math.ceil(file_size / max_parts))
+            chunk_size = max(50 * 1024 * 1024, math.ceil(file_size / max_parts))  # Minimum 50MB, adjust for large files
 
         print(f"Using chunk size: {chunk_size / (1024 * 1024)} MB")
 
-        # Start multipart upload on S3
+        # Start the multipart upload on S3
         multipart_upload = s3_client.create_multipart_upload(Bucket=s3_bucket, Key=s3_key)
         upload_id = multipart_upload['UploadId']
         print(f"Multipart upload initiated with ID: {upload_id}")
@@ -46,7 +44,7 @@ def download_and_upload_to_s3(url, s3_bucket, s3_key, max_retries=5, backoff_fac
         part_number = 1
         bytes_uploaded = 0
 
-        # Start streaming the file in chunks
+        # Start streaming the file
         with requests.get(url, stream=True, timeout=60) as response:
             response.raise_for_status()
 
@@ -78,6 +76,8 @@ def download_and_upload_to_s3(url, s3_bucket, s3_key, max_retries=5, backoff_fac
                             # If we exceed 10,000 parts, fail early
                             if part_number > 10_000:
                                 raise Exception("Exceeded S3's 10,000 part limit. Aborting upload.")
+
+                            # Exit retry loop on success
                             break
 
                         except (requests.exceptions.RequestException, NoCredentialsError, PartialCredentialsError) as e:
