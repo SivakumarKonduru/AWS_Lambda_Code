@@ -1,26 +1,29 @@
 import requests
 import boto3
 from botocore.exceptions import NoCredentialsError, PartialCredentialsError
+from requests.exceptions import RequestException
+import time
 
-def stream_to_s3_multipart(url, s3_bucket, s3_key, chunk_size=1024*1024*50):
+def stream_to_s3_multipart(url, s3_bucket, s3_key, chunk_size=1024*1024*10, max_retries=5, backoff_factor=0.5):
     """
-    Streams a file from a given URL directly to an S3 bucket using multipart upload.
+    Streams a large file from a given URL directly to an S3 bucket using multipart upload with retries and backoff.
 
     :param url: URL of the file to be streamed and uploaded.
     :param s3_bucket: Name of the S3 bucket.
     :param s3_key: S3 object key (path) where the file will be uploaded.
-    :param chunk_size: Size of each chunk to be streamed in bytes. Default is 50MB.
+    :param chunk_size: Size of each chunk to be streamed in bytes. Default is 10MB.
+    :param max_retries: Maximum number of retries for failed network requests.
+    :param backoff_factor: Time factor for exponential backoff.
     :return: Tuple containing the S3 bucket and key.
     """
     s3_client = boto3.client('s3')
 
-    # Initiate multipart upload
     try:
+        # Initiate multipart upload
         multipart_upload = s3_client.create_multipart_upload(Bucket=s3_bucket, Key=s3_key)
         upload_id = multipart_upload['UploadId']
         print(f"Started multipart upload with ID: {upload_id}")
         
-        # To store the parts and their corresponding ETags
         parts = []
         part_number = 1
 
@@ -30,24 +33,34 @@ def stream_to_s3_multipart(url, s3_bucket, s3_key, chunk_size=1024*1024*50):
 
             for chunk in response.iter_content(chunk_size=chunk_size):
                 if chunk:  # Only upload non-empty chunks
-                    print(f"Uploading part {part_number}...")
+                    retries = 0
+                    while retries < max_retries:
+                        try:
+                            print(f"Uploading part {part_number}...")
 
-                    # Upload part to S3
-                    part = s3_client.upload_part(
-                        Bucket=s3_bucket,
-                        Key=s3_key,
-                        PartNumber=part_number,
-                        UploadId=upload_id,
-                        Body=chunk
-                    )
+                            # Upload part to S3
+                            part = s3_client.upload_part(
+                                Bucket=s3_bucket,
+                                Key=s3_key,
+                                PartNumber=part_number,
+                                UploadId=upload_id,
+                                Body=chunk
+                            )
 
-                    # Append part information (PartNumber and ETag)
-                    parts.append({
-                        'ETag': part['ETag'],
-                        'PartNumber': part_number
-                    })
+                            # Append part information (PartNumber and ETag)
+                            parts.append({
+                                'ETag': part['ETag'],
+                                'PartNumber': part_number
+                            })
 
-                    part_number += 1
+                            part_number += 1
+                            break  # Break the retry loop once the part is successfully uploaded
+                        except (RequestException, NoCredentialsError, PartialCredentialsError) as e:
+                            retries += 1
+                            print(f"Error uploading part {part_number}: {e}. Retrying {retries}/{max_retries}...")
+                            time.sleep(backoff_factor * (2 ** retries))  # Exponential backoff
+                            if retries == max_retries:
+                                raise e
 
         # Complete multipart upload
         s3_client.complete_multipart_upload(
