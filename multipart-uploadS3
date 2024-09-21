@@ -2,12 +2,11 @@ import requests
 import boto3
 import time
 from botocore.exceptions import NoCredentialsError, PartialCredentialsError
-from requests.exceptions import RequestException
-from http.client import IncompleteRead
 
-def stream_to_s3_multipart(url, s3_bucket, s3_key, chunk_size=1024*1024*50, max_retries=5, backoff_factor=0.5):
+def download_and_upload_to_s3(url, s3_bucket, s3_key, chunk_size=1024*1024*50, max_retries=5, backoff_factor=0.5):
     """
-    Streams a large file from a given URL directly to an S3 bucket using multipart upload with retries and backoff.
+    Downloads a large file from a given URL and uploads it directly to an S3 bucket using multipart upload.
+    This function handles large files without requiring knowledge of file size and retries on network failures.
 
     :param url: URL of the file to be streamed and uploaded.
     :param s3_bucket: Name of the S3 bucket.
@@ -15,7 +14,7 @@ def stream_to_s3_multipart(url, s3_bucket, s3_key, chunk_size=1024*1024*50, max_
     :param chunk_size: Size of each chunk to be streamed in bytes. Default is 50MB.
     :param max_retries: Maximum number of retries for failed network requests.
     :param backoff_factor: Time factor for exponential backoff.
-    :return: Tuple containing the S3 bucket and key.
+    :return: Tuple containing the S3 bucket and key if successful.
     """
     s3_client = boto3.client('s3')
 
@@ -24,27 +23,23 @@ def stream_to_s3_multipart(url, s3_bucket, s3_key, chunk_size=1024*1024*50, max_
         multipart_upload = s3_client.create_multipart_upload(Bucket=s3_bucket, Key=s3_key)
         upload_id = multipart_upload['UploadId']
         print(f"Started multipart upload with ID: {upload_id}")
-        
+
         parts = []
         part_number = 1
         bytes_uploaded = 0
 
-        # Open a streaming connection to the URL
-        with requests.get(url, stream=True, timeout=(5, 30)) as response:
-            response.raise_for_status()  # Check for HTTP errors
+        retries = 0
+        while retries < max_retries:
+            try:
+                # Open a stream to the URL using requests with stream=True
+                with requests.get(url, stream=True, timeout=60) as response:
+                    if response.status_code != 200:
+                        raise Exception(f"Failed to connect to URL. Status: {response.status_code}")
 
-            while True:
-                try:
-                    chunk = response.raw.read(chunk_size)  # Manually read the chunk_size in each iteration
-                    if not chunk:  # No more data
-                        break
-
-                    retries = 0
-                    while retries < max_retries:
-                        try:
+                    # Stream the file in chunks
+                    for chunk in response.iter_content(chunk_size=chunk_size):
+                        if chunk:
                             print(f"Uploading part {part_number}...")
-
-                            # Upload part to S3
                             part = s3_client.upload_part(
                                 Bucket=s3_bucket,
                                 Key=s3_key,
@@ -63,35 +58,24 @@ def stream_to_s3_multipart(url, s3_bucket, s3_key, chunk_size=1024*1024*50, max_
                             bytes_uploaded += len(chunk)
                             part_number += 1
 
-                            # Break the retry loop once the part is successfully uploaded
-                            break
+                # If no errors, complete multipart upload
+                s3_client.complete_multipart_upload(
+                    Bucket=s3_bucket,
+                    Key=s3_key,
+                    UploadId=upload_id,
+                    MultipartUpload={'Parts': parts}
+                )
+                print(f"Multipart upload completed for {s3_key} with {bytes_uploaded} bytes uploaded.")
+                return s3_bucket, s3_key
 
-                        except (RequestException, NoCredentialsError, PartialCredentialsError) as e:
-                            retries += 1
-                            print(f"Error uploading part {part_number}: {e}. Retrying {retries}/{max_retries}...")
-                            time.sleep(backoff_factor * (2 ** retries))  # Exponential backoff
-                            if retries == max_retries:
-                                raise e
+            except (requests.exceptions.RequestException, NoCredentialsError, PartialCredentialsError) as e:
+                retries += 1
+                print(f"Error during download/upload part {part_number}: {e}. Retrying {retries}/{max_retries}...")
+                time.sleep(backoff_factor * (2 ** retries))
+                if retries == max_retries:
+                    raise e
 
-                except IncompleteRead as e:
-                    print(f"Incomplete read for part {part_number}: {e}. Retrying...")
-                    retries += 1
-                    if retries >= max_retries:
-                        raise e
-                    time.sleep(backoff_factor * (2 ** retries))  # Exponential backoff for read retries
-                    continue  # Retry reading the chunk
-
-        # Complete multipart upload
-        s3_client.complete_multipart_upload(
-            Bucket=s3_bucket,
-            Key=s3_key,
-            UploadId=upload_id,
-            MultipartUpload={'Parts': parts}
-        )
-        print(f"Multipart upload completed for {s3_key} with {bytes_uploaded} bytes uploaded.")
-        return s3_bucket, s3_key
-
-    except (requests.RequestException, NoCredentialsError, PartialCredentialsError, IncompleteRead) as e:
+    except (NoCredentialsError, PartialCredentialsError, Exception) as e:
         print(f"Error: {e}")
         if 'upload_id' in locals():
             s3_client.abort_multipart_upload(Bucket=s3_bucket, Key=s3_key, UploadId=upload_id)
@@ -99,7 +83,7 @@ def stream_to_s3_multipart(url, s3_bucket, s3_key, chunk_size=1024*1024*50, max_
         return None
 
 # Example usage
-bucket, key = stream_to_s3_multipart(
+bucket, key = download_and_upload_to_s3(
     url="https://example.com/path/to/ova/file.ova",  # Replace with the actual URL
     s3_bucket="your-s3-bucket-name",  # Replace with your S3 bucket
     s3_key="uploads/file.ova"  # Replace with your S3 object key (file path in bucket)
