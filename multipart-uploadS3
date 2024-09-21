@@ -3,6 +3,7 @@ import boto3
 import time
 from botocore.exceptions import NoCredentialsError, PartialCredentialsError
 from requests.exceptions import RequestException
+from http.client import IncompleteRead
 
 def stream_to_s3_multipart(url, s3_bucket, s3_key, chunk_size=1024*1024*50, max_retries=5, backoff_factor=0.5):
     """
@@ -29,48 +30,56 @@ def stream_to_s3_multipart(url, s3_bucket, s3_key, chunk_size=1024*1024*50, max_
         bytes_uploaded = 0
 
         # Open a streaming connection to the URL
-        with requests.get(url, stream=True) as response:
+        with requests.get(url, stream=True, timeout=(5, 30)) as response:
             response.raise_for_status()  # Check for HTTP errors
 
-            # We will manually manage chunks
             while True:
-                chunk = response.raw.read(chunk_size)  # Manually read the chunk_size in each iteration
-                if not chunk:  # No more data
-                    break
-
-                retries = 0
-                while retries < max_retries:
-                    try:
-                        print(f"Uploading part {part_number}...")
-
-                        # Upload part to S3
-                        part = s3_client.upload_part(
-                            Bucket=s3_bucket,
-                            Key=s3_key,
-                            PartNumber=part_number,
-                            UploadId=upload_id,
-                            Body=chunk
-                        )
-
-                        # Append part information (PartNumber and ETag)
-                        parts.append({
-                            'ETag': part['ETag'],
-                            'PartNumber': part_number
-                        })
-
-                        # Increment counters
-                        bytes_uploaded += len(chunk)
-                        part_number += 1
-
-                        # Break the retry loop once the part is successfully uploaded
+                try:
+                    chunk = response.raw.read(chunk_size)  # Manually read the chunk_size in each iteration
+                    if not chunk:  # No more data
                         break
 
-                    except (RequestException, NoCredentialsError, PartialCredentialsError) as e:
-                        retries += 1
-                        print(f"Error uploading part {part_number}: {e}. Retrying {retries}/{max_retries}...")
-                        time.sleep(backoff_factor * (2 ** retries))  # Exponential backoff
-                        if retries == max_retries:
-                            raise e
+                    retries = 0
+                    while retries < max_retries:
+                        try:
+                            print(f"Uploading part {part_number}...")
+
+                            # Upload part to S3
+                            part = s3_client.upload_part(
+                                Bucket=s3_bucket,
+                                Key=s3_key,
+                                PartNumber=part_number,
+                                UploadId=upload_id,
+                                Body=chunk
+                            )
+
+                            # Append part information (PartNumber and ETag)
+                            parts.append({
+                                'ETag': part['ETag'],
+                                'PartNumber': part_number
+                            })
+
+                            # Increment counters
+                            bytes_uploaded += len(chunk)
+                            part_number += 1
+
+                            # Break the retry loop once the part is successfully uploaded
+                            break
+
+                        except (RequestException, NoCredentialsError, PartialCredentialsError) as e:
+                            retries += 1
+                            print(f"Error uploading part {part_number}: {e}. Retrying {retries}/{max_retries}...")
+                            time.sleep(backoff_factor * (2 ** retries))  # Exponential backoff
+                            if retries == max_retries:
+                                raise e
+
+                except IncompleteRead as e:
+                    print(f"Incomplete read for part {part_number}: {e}. Retrying...")
+                    retries += 1
+                    if retries >= max_retries:
+                        raise e
+                    time.sleep(backoff_factor * (2 ** retries))  # Exponential backoff for read retries
+                    continue  # Retry reading the chunk
 
         # Complete multipart upload
         s3_client.complete_multipart_upload(
@@ -82,7 +91,7 @@ def stream_to_s3_multipart(url, s3_bucket, s3_key, chunk_size=1024*1024*50, max_
         print(f"Multipart upload completed for {s3_key} with {bytes_uploaded} bytes uploaded.")
         return s3_bucket, s3_key
 
-    except (requests.RequestException, NoCredentialsError, PartialCredentialsError) as e:
+    except (requests.RequestException, NoCredentialsError, PartialCredentialsError, IncompleteRead) as e:
         print(f"Error: {e}")
         if 'upload_id' in locals():
             s3_client.abort_multipart_upload(Bucket=s3_bucket, Key=s3_key, UploadId=upload_id)
