@@ -1,6 +1,7 @@
 import threading
 import boto3
 import requests
+import hashlib
 import sys
 from boto3.s3.transfer import TransferConfig
 
@@ -9,12 +10,17 @@ def multi_part_upload_with_s3_from_url(bucket_name, s3_key, download_url):
     # Get the response and total size of the file from the URL
     response = requests.get(download_url, stream=True)
     response.raise_for_status()  # Ensure there is no error in downloading the file
-    total_size = int(response.headers.get('content-length', 0))  # Get the total size of the file
 
-    # Calculate chunk size dynamically, minimum is set to 50 MB
+    # Try to get content-length, default to 0 if not available
+    total_size = int(response.headers.get('content-length', 0))
+
+    if total_size == 0:
+        print("Warning: Couldn't fetch file size from the URL. Progress tracking will be disabled.")
+
+    # Set minimum chunk size to 500 MB
     max_parts = 10000
-    min_chunk_size = 50 * 1024 * 1024  # 50 MB in bytes
-    chunk_size = max(min_chunk_size, total_size // max_parts)  # Dynamic chunk size
+    min_chunk_size = 500 * 1024 * 1024  # 500 MB in bytes
+    chunk_size = max(min_chunk_size, total_size // max_parts if total_size > 0 else min_chunk_size)  # Dynamic chunk size
 
     # Multipart upload configuration
     config = TransferConfig(
@@ -28,21 +34,60 @@ def multi_part_upload_with_s3_from_url(bucket_name, s3_key, download_url):
     s3 = boto3.resource('s3')
     file_obj = response.raw
 
-    # Progress tracking
-    callback = ProgressPercentage(total_size)
+    # Initialize the hash object for file integrity verification
+    sha256_hash = hashlib.sha256()
 
-    # Perform the upload directly from the response stream
+    # Progress tracking if total_size is known, else disable
+    callback = ProgressPercentage(total_size) if total_size > 0 else None
+
+    # Show upload starting message
+    print("Uploading in progress...")
+
+    # Perform the upload directly from the response stream without ACL
     s3.meta.client.upload_fileobj(
         file_obj,
         bucket_name,
         s3_key,
         Config=config,
-        Callback=callback,
-        ExtraArgs={'ACL': 'public-read', 'ContentType': 'application/octet-stream'}
+        Callback=callback,  # Only provide callback if total_size is known
+        ExtraArgs={'ContentType': 'application/octet-stream'}  # Only setting content type
     )
+
+    # Show upload completed message
+    print("\nUpload completed.")
+
+    # Compute the SHA256 hash while downloading the file
+    for chunk in response.iter_content(chunk_size=chunk_size):
+        sha256_hash.update(chunk)
+
+    # Get the hash digest
+    original_hash = sha256_hash.hexdigest()
+    print(f"Original file SHA256 hash: {original_hash}")
+
+    # Check the uploaded file hash by downloading it back (not ideal for large files, but for verification)
+    uploaded_hash = get_s3_file_hash(bucket_name, s3_key)
+    print(f"Uploaded file SHA256 hash: {uploaded_hash}")
+
+    # Compare the original and uploaded hash
+    if original_hash == uploaded_hash:
+        print("File integrity check passed: hashes match.")
+    else:
+        print("File integrity check failed: hashes do not match!")
 
     # Return bucket name and s3 key on successful upload
     return bucket_name, s3_key
+
+# Function to get the hash of the uploaded file in S3
+def get_s3_file_hash(bucket_name, s3_key):
+    s3_client = boto3.client('s3')
+    sha256_hash = hashlib.sha256()
+
+    # Download the file from S3 to compute its hash
+    with s3_client.get_object(Bucket=bucket_name, Key=s3_key)['Body'] as s3_object:
+        for chunk in iter(lambda: s3_object.read(4096), b""):
+            sha256_hash.update(chunk)
+
+    return sha256_hash.hexdigest()
 
 # Progress bar class for tracking the upload progress
 class ProgressPercentage(object):
@@ -57,8 +102,7 @@ class ProgressPercentage(object):
             self._seen_so_far += bytes_amount
             percentage = (self._seen_so_far / self._size) * 100
             sys.stdout.write(
-                "\rUploaded %s / %s (%.2f%%)" % (
-                    self._seen_so_far, self._size, percentage))
+                f"\rUploaded {self._seen_so_far} / {self._size} (%.2f%%)" % percentage)
             sys.stdout.flush()
 
 # Example usage
