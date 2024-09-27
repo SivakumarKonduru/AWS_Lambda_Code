@@ -3,42 +3,25 @@ import boto3
 import requests
 import hashlib
 import sys
-import tempfile
-import os
 from boto3.s3.transfer import TransferConfig
 from botocore.exceptions import BotoCoreError, ClientError
 
-# Function to download the OVA file to a temporary location and upload it to S3 using multipart upload
-def multi_part_upload_with_s3_from_url(bucket_name, s3_key, download_url, min_chunk_size=500 * 1024 * 1024):  # 500 MB chunk size for faster upload
+# Function to download the OVA file from a URL and upload it directly to S3 using multipart upload
+def upload_ova_to_s3(bucket_name, s3_key, download_url, chunk_size=500 * 1024 * 1024):  # 500 MB chunk size for faster upload
     try:
-        # Step 1: Download the file fully into a temporary file
-        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
-            temp_file_name = temp_file.name
-            print(f"Downloading OVA file to temporary location: {temp_file_name}")
+        # Get the response and total size of the file from the URL
+        response = requests.get(download_url, stream=True)
+        response.raise_for_status()  # Ensure the download URL is valid
 
-            response = requests.get(download_url, stream=True)
-            response.raise_for_status()  # Ensure there is no error in downloading the file
-            
-            total_size = int(response.headers.get('content-length', 0))
-            if total_size == 0:
-                print("Warning: Couldn't fetch file size from the URL.")
-            else:
-                print(f"Total file size: {total_size / (1024 * 1024)} MB")
-            
-            # Write the file to the temp location in chunks
-            for chunk in response.iter_content(chunk_size=1024 * 1024):  # 1 MB chunks
-                if chunk:
-                    temp_file.write(chunk)
-            print(f"File download completed. Stored at: {temp_file_name}")
+        # Try to get content-length, default to 0 if not available
+        total_size = int(response.headers.get('content-length', 0))
+        if total_size == 0:
+            raise ValueError("Could not retrieve file size from the URL")
 
-        # Step 2: Upload the file from the temporary location to S3
+        print(f"Total file size: {total_size / (1024 * 1024):.2f} MB")
+
+        # Initialize the S3 client and upload configuration
         s3 = boto3.resource('s3')
-
-        # Calculate chunk size dynamically, ensuring it's at least 500 MB
-        max_parts = 10000
-        chunk_size = max(min_chunk_size, total_size // max_parts if total_size > 0 else min_chunk_size)  # Dynamic chunk size
-        print(f"Chunk size for upload: {chunk_size / (1024 * 1024)} MB")
-
         config = TransferConfig(
             multipart_threshold=chunk_size,
             multipart_chunksize=chunk_size,
@@ -46,96 +29,105 @@ def multi_part_upload_with_s3_from_url(bucket_name, s3_key, download_url, min_ch
             use_threads=True
         )
 
-        # Progress tracking if total_size is known
-        callback = ProgressPercentage(total_size) if total_size > 0 else None
+        # Calculate original file hash and upload simultaneously
+        print("Starting the upload and hash calculation...")
+        original_hash = calculate_sha256_hash_and_upload(response, bucket_name, s3_key, total_size, config)
 
-        # Upload from file
-        print(f"Uploading file to S3 at {s3_key}...")
-        with open(temp_file_name, 'rb') as data:
-            s3.meta.client.upload_fileobj(
-                data,
-                bucket_name,
-                s3_key,
-                Config=config,
-                Callback=callback,
-                ExtraArgs={'ContentType': 'application/octet-stream'}
-            )
-
-        print(f"Upload to S3 completed for {s3_key}.")
-
-        # Step 3: Calculate the SHA256 hash of the original file
-        original_hash = calculate_sha256_file_hash(temp_file_name)
         print(f"Original file SHA256 hash: {original_hash}")
 
-        # Step 4: Verify the hash of the uploaded file from S3
-        print("Calculating S3 file hash...")
-        s3_hash = calculate_s3_sha256_hash(bucket_name, s3_key, chunk_size)
-        print(f"S3 file SHA256 hash: {s3_hash}")
+        # Verify the uploaded file's integrity
+        verify_s3_file_integrity(bucket_name, s3_key, original_hash)
 
-        # Compare hashes
-        if original_hash == s3_hash:
-            print("File integrity check passed: Hashes match.")
-        else:
-            raise ValueError("File integrity check failed: Hashes do not match.")
-
-        # Return bucket name and s3 key on successful upload
-        return bucket_name, s3_key
-
-    except requests.exceptions.RequestException as e:
-        print(f"Error during file download: {str(e)}")
-    except BotoCoreError as e:
-        print(f"Error with AWS SDK or connection: {str(e)}")
-    except ClientError as e:
-        print(f"S3 Client Error: {str(e)}")
-    except ValueError as e:
-        print(f"File integrity error: {str(e)}")
+    except (BotoCoreError, ClientError, requests.RequestException) as e:
+        print(f"Error occurred: {e}")
+        raise
     except Exception as e:
-        print(f"An unexpected error occurred: {str(e)}")
-    finally:
-        # Ensure temporary file cleanup
-        if os.path.exists(temp_file_name):
-            os.remove(temp_file_name)
-            print(f"Temporary file {temp_file_name} has been deleted.")
-    return None, None
+        print(f"Unexpected error: {e}")
+        raise
 
-# Function to calculate the SHA256 hash of the local file
-def calculate_sha256_file_hash(file_path, chunk_size=1024 * 1024):  # 1 MB chunk size for hashing
+# Function to calculate the SHA-256 hash while uploading
+def calculate_sha256_hash_and_upload(response, bucket_name, s3_key, total_size, config):
     hash_sha256 = hashlib.sha256()
-    try:
-        with open(file_path, 'rb') as f:
+    s3_client = boto3.client('s3')
+    
+    # Progress tracking
+    progress = ProgressPercentage(total_size)
+    
+    # Streaming data to S3
+    with response.raw as data:
+        part_num = 1
+        parts = []
+        uploaded_bytes = 0
+        
+        # Multipart upload setup
+        multipart_upload = s3_client.create_multipart_upload(Bucket=bucket_name, Key=s3_key)
+        
+        try:
             while True:
-                chunk = f.read(chunk_size)
+                chunk = data.read(500 * 1024 * 1024)  # 500 MB chunks
                 if not chunk:
                     break
+
+                # Update the hash
                 hash_sha256.update(chunk)
-        return hash_sha256.hexdigest()
-    except Exception as e:
-        print(f"Error calculating file SHA256 hash: {str(e)}")
-        raise
+                
+                # Upload the part to S3
+                part = s3_client.upload_part(
+                    Bucket=bucket_name,
+                    Key=s3_key,
+                    PartNumber=part_num,
+                    UploadId=multipart_upload['UploadId'],
+                    Body=chunk
+                )
+                parts.append({'PartNumber': part_num, 'ETag': part['ETag']})
+                
+                uploaded_bytes += len(chunk)
+                progress(uploaded_bytes)  # Update progress
+                
+                part_num += 1
 
-# Function to calculate SHA256 hash of an S3 object
-def calculate_s3_sha256_hash(bucket_name, s3_key, chunk_size=1024 * 1024):  # Default chunk size for reading S3 object
+            # Complete the multipart upload
+            s3_client.complete_multipart_upload(
+                Bucket=bucket_name,
+                Key=s3_key,
+                UploadId=multipart_upload['UploadId'],
+                MultipartUpload={'Parts': parts}
+            )
+            print("Upload complete.")
+
+        except Exception as e:
+            s3_client.abort_multipart_upload(
+                Bucket=bucket_name,
+                Key=s3_key,
+                UploadId=multipart_upload['UploadId']
+            )
+            print(f"Upload aborted due to error: {e}")
+            raise
+
+    return hash_sha256.hexdigest()
+
+# Function to verify S3 file integrity by comparing hashes
+def verify_s3_file_integrity(bucket_name, s3_key, original_hash):
+    print("Calculating S3 file hash...")
     s3_client = boto3.client('s3')
+
+    # Download the file from S3 and calculate its hash
     hash_sha256 = hashlib.sha256()
-    try:
-        # Stream the file from S3
-        response = s3_client.get_object(Bucket=bucket_name, Key=s3_key)
-        file_stream = response['Body']
+    response = s3_client.get_object(Bucket=bucket_name, Key=s3_key)['Body']
+    while True:
+        chunk = response.read(1024 * 1024)  # 1 MB chunks for hash calculation
+        if not chunk:
+            break
+        hash_sha256.update(chunk)
 
-        # Read the S3 object in chunks and calculate the hash
-        while True:
-            chunk = file_stream.read(chunk_size)
-            if not chunk:
-                break
-            hash_sha256.update(chunk)
+    s3_file_hash = hash_sha256.hexdigest()
 
-        return hash_sha256.hexdigest()
-    except ClientError as e:
-        print(f"S3 Client Error while calculating hash: {str(e)}")
-        raise
-    except Exception as e:
-        print(f"Error calculating S3 file SHA256 hash: {str(e)}")
-        raise
+    print(f"S3 file SHA256 hash: {s3_file_hash}")
+
+    if original_hash == s3_file_hash:
+        print("File integrity check passed: hashes match.")
+    else:
+        raise ValueError("File integrity check failed: hashes do not match.")
 
 # Progress bar class for tracking the upload progress
 class ProgressPercentage(object):
@@ -150,20 +142,17 @@ class ProgressPercentage(object):
             self._seen_so_far += bytes_amount
             percentage = (self._seen_so_far / self._size) * 100
             sys.stdout.write(
-                "\rUploaded %s / %s (%.2f%%)" % (
-                    self._seen_so_far, self._size, percentage))
+                f"\rUploaded {self._seen_so_far / (1024 * 1024):.2f} MB / {self._size / (1024 * 1024):.2f} MB ({percentage:.2f}%)")
             sys.stdout.flush()
 
 # Example usage
 if __name__ == "__main__":
+    # S3 bucket name and S3 key (file name in S3)
     bucket_name = 'your-s3-bucket-name'
-    s3_key = 'path/in/s3/largefile.ova'
+    s3_key = 'path/in/s3/largefile.ova'  # Change this to your desired S3 key
+
+    # OVA file download URL
     download_url = 'https://example.com/path-to-your-ova-file.ova'
 
     # Call the function to download and upload the file
-    uploaded_bucket, uploaded_key = multi_part_upload_with_s3_from_url(bucket_name, s3_key, download_url)
-
-    if uploaded_bucket and uploaded_key:
-        print(f"\nFile successfully uploaded to bucket: {uploaded_bucket}, key: {uploaded_key}")
-    else:
-        print("\nFile upload failed.")
+    upload_ova_to_s3(bucket_name, s3_key, download_url)
