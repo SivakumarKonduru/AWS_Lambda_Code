@@ -34,14 +34,13 @@ def multi_part_upload_with_s3_from_url(bucket_name, s3_key, download_url):
         file_obj = response.raw
         
         # Calculate hash for verification
-        original_hash = calculate_sha256_hash(response, total_size)
+        original_hash = calculate_sha256_hash(requests.get(download_url, stream=True), total_size)
+        print(f"Original file SHA256 hash: {original_hash}")
 
         # Reset the stream to the beginning for uploading
         response = requests.get(download_url, stream=True)
         response.raise_for_status()  # Ensure no errors
-
-        print(f"Original file SHA256 hash: {original_hash}")
-
+        
         # Track progress and upload file
         callback = ProgressPercentage(total_size)
         s3.meta.client.upload_fileobj(
@@ -56,10 +55,19 @@ def multi_part_upload_with_s3_from_url(bucket_name, s3_key, download_url):
         # Verify file size after upload
         s3_file_size = s3.Object(bucket_name, s3_key).content_length
         print(f"S3 file size: {s3_file_size / (1024 * 1024 * 1024)} GB")
+        print("Upload completed. Now verifying file integrity...")
 
-        # Return bucket name and S3 key on successful upload
-        print("Upload completed.")
-        return bucket_name, s3_key
+        # Recalculate hash by downloading the file back from S3
+        s3_hash = calculate_sha256_hash_from_s3(bucket_name, s3_key)
+        print(f"S3 file SHA256 hash: {s3_hash}")
+
+        # Compare the original hash and S3 hash
+        if original_hash == s3_hash:
+            print("File integrity check passed.")
+            return bucket_name, s3_key
+        else:
+            print("File integrity check failed: hashes do not match.")
+            return None, None
 
     except requests.exceptions.RequestException as download_error:
         print(f"Error downloading file: {download_error}")
@@ -67,6 +75,43 @@ def multi_part_upload_with_s3_from_url(bucket_name, s3_key, download_url):
     except Exception as e:
         print(f"Error during upload: {e}")
         return None, None
+
+# Function to calculate SHA256 hash
+def calculate_sha256_hash(response, total_size):
+    sha256_hash = hashlib.sha256()
+    downloaded = 0
+    print("Calculating file hash...")
+
+    for chunk in response.iter_content(chunk_size=8192):
+        sha256_hash.update(chunk)
+        downloaded += len(chunk)
+
+        # Print progress every 100 MB
+        if downloaded % (100 * 1024 * 1024) == 0:
+            print(f"Downloaded {downloaded / (1024 * 1024)} MB for hash calculation")
+
+    return sha256_hash.hexdigest()
+
+# Function to calculate SHA256 hash from an S3 object
+def calculate_sha256_hash_from_s3(bucket_name, s3_key):
+    s3 = boto3.client('s3')
+    sha256_hash = hashlib.sha256()
+
+    try:
+        # Download file from S3 in chunks and update the hash
+        s3_object = s3.get_object(Bucket=bucket_name, Key=s3_key)
+        file_stream = s3_object['Body']
+
+        print("Calculating S3 file hash...")
+
+        for chunk in iter(lambda: file_stream.read(8192), b''):
+            sha256_hash.update(chunk)
+
+        return sha256_hash.hexdigest()
+
+    except Exception as e:
+        print(f"Error calculating hash from S3: {e}")
+        return None
 
 # Progress bar class for tracking upload progress
 class ProgressPercentage(object):
@@ -83,22 +128,6 @@ class ProgressPercentage(object):
                 f"\rUploaded {self._seen_so_far} / {self._size} bytes ({percentage:.2f}%)"
             )
             sys.stdout.flush()
-
-# Function to calculate SHA256 hash for integrity checking
-def calculate_sha256_hash(response, total_size):
-    sha256_hash = hashlib.sha256()
-    downloaded = 0
-    print("Calculating file hash...")
-
-    for chunk in response.iter_content(chunk_size=8192):
-        sha256_hash.update(chunk)
-        downloaded += len(chunk)
-
-        # Print progress every 100 MB
-        if downloaded % (100 * 1024 * 1024) == 0:
-            print(f"Downloaded {downloaded / (1024 * 1024)} MB for hash calculation")
-
-    return sha256_hash.hexdigest()
 
 # Example usage
 if __name__ == "__main__":
