@@ -1,37 +1,89 @@
 import boto3
 import requests
 from botocore.exceptions import BotoCoreError, NoCredentialsError
-import time
+import os
 
-def upload_large_ova_to_s3_using_fileobj(url, bucket_name, s3_key, retries=3, backoff=5):
-    # Initialize S3 resource
-    s3 = boto3.resource('s3')
+# Define chunk size in bytes (e.g., 100 MB per part)
+CHUNK_SIZE = 100 * 1024 * 1024
 
-    for attempt in range(retries):
-        try:
-            # Stream the file from the URL
-            with requests.get(url, stream=True, timeout=60) as response:
-                response.raise_for_status()  # Check for HTTP errors
+def upload_large_ova_to_s3_using_multipart(url, bucket_name, s3_key):
+    # Initialize S3 client
+    s3_client = boto3.client('s3')
 
-                # Upload the file stream directly to S3
-                s3.meta.client.upload_fileobj(response.raw, bucket_name, s3_key)
-                print(f"File uploaded successfully to s3://{bucket_name}/{s3_key}")
-                return True  # Upload was successful, exit function
+    # Create a multipart upload
+    try:
+        multipart_upload = s3_client.create_multipart_upload(Bucket=bucket_name, Key=s3_key)
+        upload_id = multipart_upload['UploadId']
+    except (BotoCoreError, NoCredentialsError) as e:
+        print(f"Failed to initiate multipart upload: {e}")
+        return None, None
 
-        except requests.exceptions.RequestException as e:
-            print(f"Failed to download the file on attempt {attempt+1}/{retries}: {e}")
-        except (BotoCoreError, NoCredentialsError) as e:
-            print(f"Failed to upload the file to S3 on attempt {attempt+1}/{retries}: {e}")
+    part_number = 1
+    parts = []
 
-        # Wait before retrying
-        time.sleep(backoff)
+    try:
+        # Stream the file from the URL
+        with requests.get(url, stream=True) as response:
+            response.raise_for_status()
+            # Use a temporary file to store the stream in chunks
+            with open("temp_chunk_file", "wb") as temp_file:
+                for chunk in response.iter_content(chunk_size=CHUNK_SIZE):
+                    if not chunk:
+                        break  # End of file
 
-    print("Exceeded maximum retries. Upload failed.")
-    return False
+                    # Write the chunk to the temp file
+                    temp_file.write(chunk)
+
+                    # Rewind the file pointer to the start of the temp file for uploading
+                    temp_file.seek(0)
+
+                    # Upload the part
+                    part_response = s3_client.upload_part(
+                        Bucket=bucket_name,
+                        Key=s3_key,
+                        PartNumber=part_number,
+                        UploadId=upload_id,
+                        Body=temp_file
+                    )
+
+                    # Record the part number and ETag for completing the multipart upload
+                    parts.append({
+                        'PartNumber': part_number,
+                        'ETag': part_response['ETag']
+                    })
+
+                    # Clear the temp file for the next chunk
+                    temp_file.truncate(0)
+
+                    part_number += 1
+
+        # Complete the multipart upload
+        s3_client.complete_multipart_upload(
+            Bucket=bucket_name,
+            Key=s3_key,
+            UploadId=upload_id,
+            MultipartUpload={'Parts': parts}
+        )
+        
+        print(f"File uploaded successfully to s3://{bucket_name}/{s3_key}")
+        # Clean up temp file
+        os.remove("temp_chunk_file")
+        return bucket_name, s3_key
+
+    except (requests.exceptions.RequestException, BotoCoreError, NoCredentialsError) as e:
+        print(f"Error during upload: {e}")
+        # Abort multipart upload if something goes wrong
+        s3_client.abort_multipart_upload(Bucket=bucket_name, Key=s3_key, UploadId=upload_id)
+        return None, None
 
 # Example usage
 url = "https://example.com/path-to-large-ova-file.ova"
 bucket_name = "your-s3-bucket"
 s3_key = "path-in-s3/large-ova-file.ova"
 
-upload_large_ova_to_s3_using_fileobj(url, bucket_name, s3_key)
+result_bucket_name, result_s3_key = upload_large_ova_to_s3_using_multipart(url, bucket_name, s3_key)
+
+if result_bucket_name and result_s3_key:
+    print(f"Uploaded to Bucket: {result_bucket_name}, Key: {result_s3_key}")
+else:
+    print("Upload failed.")
