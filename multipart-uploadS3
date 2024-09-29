@@ -1,7 +1,6 @@
 import boto3
 import requests
 import hashlib
-from botocore.exceptions import BotoCoreError, NoCredentialsError
 
 def download_and_upload_ova(url, bucket_name, s3_key, chunk_size=1024*1024*50):  # 50 MB chunks
     # Initialize S3 client
@@ -10,32 +9,42 @@ def download_and_upload_ova(url, bucket_name, s3_key, chunk_size=1024*1024*50): 
     # Hashing object to ensure integrity
     sha256_hash = hashlib.sha256()
 
-    # Streaming download and upload to S3 in chunks
     try:
+        # Streaming download from the provided URL
         with requests.get(url, stream=True) as response:
             response.raise_for_status()
             
-            # Create a file-like object for uploading directly to S3 in chunks
-            with response.raw as data_stream:
-                # Using the fileobjupload with chunking
-                s3_client.upload_fileobj(data_stream, bucket_name, s3_key)
-
-                # Process file in chunks
-                for chunk in iter(lambda: data_stream.read(chunk_size), b""):
-                    sha256_hash.update(chunk)
+            # Initialize the S3 file upload by writing data directly using put_object
+            file_position = 0  # Track the position within the file
+            
+            # Reading the file in chunks and uploading each chunk
+            for chunk in response.iter_content(chunk_size=chunk_size):
+                if not chunk:
+                    break  # End of file
+                
+                sha256_hash.update(chunk)  # Update hash for integrity check
+                
+                # Upload each chunk directly using put_object
+                s3_client.put_object(
+                    Bucket=bucket_name,
+                    Key=s3_key,
+                    Body=chunk,
+                    ContentRange=f"bytes {file_position}-{file_position + len(chunk) - 1}/{file_position + len(chunk)}"
+                )
+                
+                file_position += len(chunk)
 
     except requests.exceptions.RequestException as e:
         print(f"HTTP Request failed: {e}")
         return None
 
-    except (BotoCoreError, NoCredentialsError) as e:
+    except boto3.exceptions.Boto3Error as e:
         print(f"Error uploading to S3: {e}")
         return None
 
-    # After the upload is complete, print the hash
+    # After the upload is complete, print the SHA-256 hash
     print(f"SHA-256 Hash of OVA: {sha256_hash.hexdigest()}")
 
-    # Return bucket name and key
     return bucket_name, s3_key
 
 
