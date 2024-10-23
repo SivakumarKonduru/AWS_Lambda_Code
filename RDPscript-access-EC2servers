@@ -23,7 +23,7 @@ function Start-SSMSessionForInstances ($instances, $region, $accesskey, $secretK
         $instanceName = ($instance.Instances.Tags | Where-Object { $_.Key -eq 'Name' }).Value
 
         # Print statement to show SSM session is starting
-        Write-Host "Starting SSM session for instance: $instanceName (ID: $instanceId) on port $currentPort..." -ForegroundColor Yellow
+        Write-Host "`nStarting SSM session for instance: $instanceName (ID: $instanceId) on port $currentPort..." -ForegroundColor Yellow
 
         # Ensure AWS CLI is configured
         aws configure set aws_access_key_id $accessKey
@@ -45,6 +45,9 @@ function Start-SSMSessionForInstances ($instances, $region, $accesskey, $secretK
 
         # Increment the port number for the next instance
         $currentPort++
+
+        # Pause to give time for output to stabilize before the next instance
+        Start-Sleep -Seconds 1
     }
 }
 
@@ -58,7 +61,7 @@ screen mode id:i:2
 "@
     $currentPath = Get-Location
     $rdpFilePath = "$currentPath\SSM_RDP_$($instanceName)_$($localPort).rdp"
-    Set-Content -path $rdpFilePath -Value $rdpFileContent
+    Set-Content -Path $rdpFilePath -Value $rdpFileContent
     Write-Host "RDP file generated for $instanceName at $rdpFilePath." -ForegroundColor Cyan
 
     # Brief sleep to ensure proper logging before the next instance
@@ -78,7 +81,7 @@ $iamUser = Get-IAMUser -ProfileName "ABC-Access"
 
 # Step 3: Get the partner tag from IAM policy
 $partnerTagValue = $iamUser.UserName.Substring(0, $iamUser.UserName.LastIndexOf('_'))
-Write-Host "Partner: $partnerTagValue" -ForegroundColor Blue
+Write-Host "`nPartner: $partnerTagValue" -ForegroundColor Blue
 
 # Step 4: Fetch EC2 instances using the partner tag
 $tagKey = "partner"
@@ -89,7 +92,7 @@ if ($instances.Count -eq 0) {
     Write-Host "No EC2 instances found with the specified partner tag." -ForegroundColor Red
     Exit
 }
-Write-Host "Found the following instances tagged with '$partnerTagValue':" -ForegroundColor Blue
+Write-Host "`nFound the following instances tagged with '$partnerTagValue':" -ForegroundColor Blue
 foreach ($instance in $instances) {
     $instanceId = $instance.Instances.InstanceId
     $instanceName = ($instance.Instances.Tags | Where-Object { $_.Key -eq 'Name' }).Value
@@ -100,5 +103,5 @@ foreach ($instance in $instances) {
 $startPort = 9999
 Start-SSMSessionForInstances -instances $instances -region $region -accesskey $accesskey -secretKey $secretKey -startPort $startPort
 
-# Download all generated RDP files
-Write-Host "RDP files have been generated for all instances." -ForegroundColor Cyan
+# Indicate the end of the process
+Write-Host "`nAll RDP files have been generated and SSM sessions started." -ForegroundColor Cyan
