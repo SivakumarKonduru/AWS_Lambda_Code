@@ -22,25 +22,25 @@ function Start-SSMSessionForInstances ($instances, $region, $accesskey, $secretK
         $instanceId = $instance.Instances.InstanceId
         $instanceName = ($instance.Instances.Tags | Where-Object { $_.Key -eq 'Name' }).Value
 
-        # Configure AWS session for each instance
-        $sessionIdCommand = "aws configure set aws_access_key_id $accessKey"
-        Invoke-Expression -Command $sessionIdCommand
-        $sessionKeyCommand = "aws configure set aws_secret_access_key $secretKey"
-        Invoke-Expression -Command $sessionKeyCommand
-        $sessionRegionCommand = "aws configure set region $region"
-        Invoke-Expression -Command $sessionRegionCommand
+        # Ensure AWS CLI is configured
+        aws configure set aws_access_key_id $accessKey
+        aws configure set aws_secret_access_key $secretKey
+        aws configure set region $region
 
         # Start port forwarding session
         $sessionCommand = "aws ssm start-session --target $instanceId --document-name AWS-StartPortForwardingSession --parameters portNumber=3389,localPortNumber=$currentPort --region $region"
-        Invoke-Expression -Command $sessionCommand
+        try {
+            Invoke-Expression -Command $sessionCommand
+            Write-Host "SSM Session started for instance: $instanceId on local port $currentPort"
+            
+            # Generate an RDP file for this instance
+            Generate-RDPFile -instanceName $instanceName -localPort $currentPort
 
-        Write-Host "SSM Session started for instance: $instanceId on local port $currentPort"
-
-        # Generate an RDP file for this instance
-        Generate-RDPFile -instanceName $instanceName -localPort $currentPort
-
-        # Increment the port number for the next instance
-        $currentPort++
+            # Increment the port number for the next instance
+            $currentPort++
+        } catch {
+            Write-Host "Failed to start SSM session for instance: $instanceId. Skipping."
+        }
     }
 }
 
@@ -80,3 +80,6 @@ $instances = Get-EC2InstanceByTag -region $region -tagKey $tagKey -tagValue $par
 # Step 5: Start SSM sessions for all instances, starting from port 9999
 $startPort = 9999
 Start-SSMSessionForInstances -instances $instances -region $region -accesskey $accesskey -secretKey $secretKey -startPort $startPort
+
+# Download all generated RDP files
+Write-Host "RDP files have been generated for all instances."
