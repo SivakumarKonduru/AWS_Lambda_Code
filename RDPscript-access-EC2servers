@@ -34,7 +34,7 @@ function Start-SSMSessionForInstances ($instances, $region, $accesskey, $secretK
         $sessionCommand = "aws ssm start-session --target $instanceId --document-name AWS-StartPortForwardingSession --parameters portNumber=3389,localPortNumber=$currentPort --region $region"
 
         # Run the command in foreground, ensure completion before next instance
-        $process = Start-Process -NoNewWindow -FilePath "powershell" -ArgumentList "-Command", $sessionCommand -NoNewWindow -Wait
+        $process = Start-Process -FilePath "powershell" -ArgumentList "-Command", $sessionCommand -NoNewWindow -Wait
 
         # Wait briefly for the session command to be fully processed and session to establish
         Start-Sleep -Seconds 2
