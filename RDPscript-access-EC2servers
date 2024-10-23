@@ -1,0 +1,82 @@
+Import-Module AWSPowerShell
+
+$env:path += ";c:\program Files\Amazon\AWSCLIv2"
+
+# AWS credentials
+$accesskey = ""
+$secretKey = ""
+
+# Function to fetch EC2 instances by tag key and value
+function Get-EC2InstanceByTag ($region, $tagKey, $tagValue) {
+    $instances = Get-EC2Instance -Region $region -ProfileName "ABS-Access" | Where-Object {
+        $_.Instances.Tags | Where-Object { $_.Key -eq $tagKey -and $_.Value -eq $tagValue }
+    }
+    return $instances  
+}
+
+# Function to start an SSM session with port forwarding for RDP
+function Start-SSMSessionForInstances ($instances, $region, $accesskey, $secretKey, $startPort) {
+    $currentPort = $startPort
+
+    foreach ($instance in $instances) {
+        $instanceId = $instance.Instances.InstanceId
+        $instanceName = ($instance.Instances.Tags | Where-Object { $_.Key -eq 'Name' }).Value
+
+        # Configure AWS session for each instance
+        $sessionIdCommand = "aws configure set aws_access_key_id $accessKey"
+        Invoke-Expression -Command $sessionIdCommand
+        $sessionKeyCommand = "aws configure set aws_secret_access_key $secretKey"
+        Invoke-Expression -Command $sessionKeyCommand
+        $sessionRegionCommand = "aws configure set region $region"
+        Invoke-Expression -Command $sessionRegionCommand
+
+        # Start port forwarding session
+        $sessionCommand = "aws ssm start-session --target $instanceId --document-name AWS-StartPortForwardingSession --parameters portNumber=3389,localPortNumber=$currentPort --region $region"
+        Invoke-Expression -Command $sessionCommand
+
+        Write-Host "SSM Session started for instance: $instanceId on local port $currentPort"
+
+        # Generate an RDP file for this instance
+        Generate-RDPFile -instanceName $instanceName -localPort $currentPort
+
+        # Increment the port number for the next instance
+        $currentPort++
+    }
+}
+
+# Function to generate an RDP file for each instance
+function Generate-RDPFile ($instanceName, $localPort) {
+    $rdpFileContent = @"
+full address:s:localhost:$localPort
+prompt for credentials:i:1
+administrative session:i:1
+screen mode id:i:2
+"@
+    $currentPath = Get-Location
+    $rdpFilePath = "$currentPath\SSM_RDP_$($instanceName)_$($localPort).rdp"
+    Set-Content -path $rdpFilePath -Value $rdpFileContent
+    Write-Host "RDP file generated at $rdpFilePath"
+}
+
+# Main Execution
+# Step 1: Set AWS Credentials
+$region = "af-south-1"
+
+# Set AWS credentials for the profile
+Set-AWSCredential -AccessKey $accesskey -SecretKey $secretKey -StoreAS "ABC-Access"
+Set-DefaultAWSRegion -Region $region
+
+# Step 2: Get the IAM User
+$iamUser = Get-IAMUser -ProfileName "ABC-Access"
+
+# Step 3: Get the partner tag from IAM policy
+$partnerTagValue = $iamUser.UserName.Substring(0, $iamUser.UserName.LastIndexOf('_'))
+Write-Host $partnerTagValue
+
+# Step 4: Fetch EC2 instances using the partner tag
+$tagKey = "partner"
+$instances = Get-EC2InstanceByTag -region $region -tagKey $tagKey -tagValue $partnerTagValue
+
+# Step 5: Start SSM sessions for all instances, starting from port 9999
+$startPort = 9999
+Start-SSMSessionForInstances -instances $instances -region $region -accesskey $accesskey -secretKey $secretKey -startPort $startPort
