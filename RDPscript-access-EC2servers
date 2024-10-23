@@ -14,7 +14,7 @@ function Get-EC2InstanceByTag ($region, $tagKey, $tagValue) {
     return $instances  
 }
 
-# Function to start an SSM session with port forwarding for RDP as a background job
+# Function to start an SSM session with port forwarding for RDP
 function Start-SSMSessionForInstances ($instances, $region, $accesskey, $secretKey, $startPort) {
     $currentPort = $startPort
 
@@ -24,7 +24,7 @@ function Start-SSMSessionForInstances ($instances, $region, $accesskey, $secretK
 
         # Print statement to show SSM session is starting
         Write-Host "Starting SSM session for instance: $instanceName (ID: $instanceId) on port $currentPort..." -ForegroundColor Yellow
-        
+
         # Ensure AWS CLI is configured
         aws configure set aws_access_key_id $accessKey
         aws configure set aws_secret_access_key $secretKey
@@ -33,11 +33,8 @@ function Start-SSMSessionForInstances ($instances, $region, $accesskey, $secretK
         # Build the session command
         $sessionCommand = "aws ssm start-session --target $instanceId --document-name AWS-StartPortForwardingSession --parameters portNumber=3389,localPortNumber=$currentPort --region $region"
 
-        # Start the session as a background job
-        Start-Job -ScriptBlock {
-            param($cmd) 
-            Invoke-Expression $cmd
-        } -ArgumentList $sessionCommand
+        # Run the session command in the same session (no background job)
+        Start-Process -FilePath "powershell.exe" -ArgumentList "-Command $sessionCommand" -NoNewWindow
 
         # Wait briefly for the session to stabilize and print
         Start-Sleep -Seconds 2
