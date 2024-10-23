@@ -8,7 +8,7 @@ $secretKey = ""
 
 # Function to fetch EC2 instances by tag key and value
 function Get-EC2InstanceByTag ($region, $tagKey, $tagValue) {
-    $instances = Get-EC2Instance -Region $region -ProfileName "ABS-Access" | Where-Object {
+    $instances = Get-EC2Instance -Region $region -ProfileName "ABC-Access" | Where-Object {
         $_.Instances.Tags | Where-Object { $_.Key -eq $tagKey -and $_.Value -eq $tagValue }
     }
     return $instances  
@@ -27,20 +27,16 @@ function Start-SSMSessionForInstances ($instances, $region, $accesskey, $secretK
         aws configure set aws_secret_access_key $secretKey
         aws configure set region $region
 
-        # Start port forwarding session
+        # Start port forwarding session in a new PowerShell process for each instance (parallel)
         $sessionCommand = "aws ssm start-session --target $instanceId --document-name AWS-StartPortForwardingSession --parameters portNumber=3389,localPortNumber=$currentPort --region $region"
-        try {
-            Invoke-Expression -Command $sessionCommand
-            Write-Host "SSM Session started for instance: $instanceId on local port $currentPort"
-            
-            # Generate an RDP file for this instance
-            Generate-RDPFile -instanceName $instanceName -localPort $currentPort
+        Start-Process powershell -ArgumentList $sessionCommand
+        Write-Host "SSM Session started for instance: $instanceId on local port $currentPort"
+        
+        # Generate an RDP file for this instance
+        Generate-RDPFile -instanceName $instanceName -localPort $currentPort
 
-            # Increment the port number for the next instance
-            $currentPort++
-        } catch {
-            Write-Host "Failed to start SSM session for instance: $instanceId. Skipping."
-        }
+        # Increment the port number for the next instance
+        $currentPort++
     }
 }
 
@@ -71,13 +67,25 @@ $iamUser = Get-IAMUser -ProfileName "ABC-Access"
 
 # Step 3: Get the partner tag from IAM policy
 $partnerTagValue = $iamUser.UserName.Substring(0, $iamUser.UserName.LastIndexOf('_'))
-Write-Host $partnerTagValue
+Write-Host "Partner: $partnerTagValue"
 
 # Step 4: Fetch EC2 instances using the partner tag
 $tagKey = "partner"
 $instances = Get-EC2InstanceByTag -region $region -tagKey $tagKey -tagValue $partnerTagValue
 
-# Step 5: Start SSM sessions for all instances, starting from port 9999
+# Step 5: Display the instances found
+if ($instances.Count -eq 0) {
+    Write-Host "No EC2 instances found with the specified partner tag."
+    Exit
+}
+Write-Host "Found the following instances tagged with '$partnerTagValue':"
+foreach ($instance in $instances) {
+    $instanceId = $instance.Instances.InstanceId
+    $instanceName = ($instance.Instances.Tags | Where-Object { $_.Key -eq 'Name' }).Value
+    Write-Host "- $instanceName (Instance ID: $instanceId)"
+}
+
+# Step 6: Start SSM sessions for all instances, starting from port 9999
 $startPort = 9999
 Start-SSMSessionForInstances -instances $instances -region $region -accesskey $accesskey -secretKey $secretKey -startPort $startPort
 
