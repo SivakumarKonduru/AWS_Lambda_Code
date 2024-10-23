@@ -22,8 +22,9 @@ function Start-SSMSessionForInstances ($instances, $region, $accesskey, $secretK
         $instanceId = $instance.Instances.InstanceId
         $instanceName = ($instance.Instances.Tags | Where-Object { $_.Key -eq 'Name' }).Value
 
+        # Print statement to show SSM session is starting
         Write-Host "Starting SSM session for instance: $instanceName (ID: $instanceId) on port $currentPort..." -ForegroundColor Yellow
-
+        
         # Ensure AWS CLI is configured
         aws configure set aws_access_key_id $accessKey
         aws configure set aws_secret_access_key $secretKey
@@ -31,15 +32,13 @@ function Start-SSMSessionForInstances ($instances, $region, $accesskey, $secretK
 
         # Build the session command
         $sessionCommand = "aws ssm start-session --target $instanceId --document-name AWS-StartPortForwardingSession --parameters portNumber=3389,localPortNumber=$currentPort --region $region"
-        
-        # Run the command in the background without showing the session output
-        $process = Start-Process -NoNewWindow -FilePath "powershell" -ArgumentList "-Command", $sessionCommand -PassThru
-        $process | Out-Null  # Suppress output and log only the start
 
-        # Sleep to allow output to finish before next session starts
-        Start-Sleep -Seconds 2
-
+        # Run the command and wait for completion before printing the next statement
+        $process = Start-Process -NoNewWindow -FilePath "powershell" -ArgumentList "-Command", $sessionCommand -Wait -PassThru
         Write-Host "SSM session for instance $instanceName started on port $currentPort." -ForegroundColor Green
+
+        # Sleep to ensure proper order before generating RDP file
+        Start-Sleep -Milliseconds 500
 
         # Generate an RDP file for this instance
         Generate-RDPFile -instanceName $instanceName -localPort $currentPort
@@ -63,7 +62,7 @@ screen mode id:i:2
     Write-Host "RDP file generated for $instanceName at $rdpFilePath." -ForegroundColor Cyan
 
     # Sleep briefly to allow proper logging before next instance
-    Start-Sleep -Seconds 1
+    Start-Sleep -Milliseconds 500
 }
 
 # Main Execution
