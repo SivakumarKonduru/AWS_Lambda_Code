@@ -1,11 +1,5 @@
 Import-Module AWSPowerShell
 
-$env:path += ";c:\program Files\Amazon\AWSCLIv2"
-
-# Configure AWS credentials
-$accesskey = ""
-$secretKey = ""
-
 # Function to fetch EC2 instances by tag key and value
 function Get-EC2InstanceByTag ($region, $tagKey, $tagValue) {
     $instances = Get-EC2Instance -Region $region -ProfileName "ABC-Access" | Where-Object {
@@ -49,22 +43,15 @@ function Start-SSMSessionForInstances ($instanceOptions, $region, $accessKey, $s
 
         Write-Host "`nStarting SSM session for instance: $($instance.Name) on local port $localPort"
 
-        $sessionIdCommand = "aws configure set aws_access_key_id $accessKey"
-        Invoke-Expression -Command $sessionIdCommand
-
-        $sessionKeyCommand = "aws configure set aws_secret_access_key $secretKey"
-        Invoke-Expression -Command $sessionKeyCommand
-
-        $sessionRegionCommand = "aws configure set region $region"
-        Invoke-Expression -Command $sessionRegionCommand
-
         $sessionCommand = "aws ssm start-session --target $($instance.InstanceId) --document-name AWS-StartPortForwardingSession --parameters portNumber=3389,localPortNumber=$localPort --region $region"
-        $sessionProcess = Start-Process -FilePath "powershell" -ArgumentList $sessionCommand -NoNewWindow -PassThru
+        
+        # Start the session without opening a new window
+        Start-Process -FilePath "powershell" -ArgumentList $sessionCommand -NoNewWindow -PassThru | Out-Null
 
-        Write-Host "`nSession started with SessionId for instance: $($instance.InstanceId) on port $localPort"
+        Write-Host "`nSession started for instance: $($instance.Name) on local port $localPort"
 
         # Pause to avoid overlapping output
-        Start-Sleep -Seconds 2
+        Start-Sleep -Seconds 3
     }
 }
 
@@ -90,29 +77,28 @@ screen mode id:i:2
 
 # Main Execution
 
-# Step 1: Set AWS Credentials
 $region = "af-south-1"
 
 # Set AWS Credentials
 Set-AWSCredential -AccessKey $accesskey -SecretKey $secretKey -StoreAs "ABC-Access"
 Set-DefaultAWSRegion -Region $region
 
-# Step 2: Get the IAM User
+# Step 1: Get the IAM User
 $iamUser = Get-IAMUser -ProfileName "ABC-Access"
 
-# Step 3: Get the partner tag from the IAM User
+# Step 2: Get the partner tag from the IAM User
 $partnerTagValue = $iamUser.UserName.Substring(0, $iamUser.UserName.LastIndexOf('_'))
 Write-Host "Partner Tag Value: $partnerTagValue"
 
-# Step 4: Fetch EC2 instances using the partner tag
+# Step 3: Fetch EC2 instances using the partner tag
 $tagKey = "partner"
 $instances = Get-EC2InstanceByTag -region $region -tagKey $tagKey -tagValue $partnerTagValue
 
-# Step 5: Display the instances to the user
+# Step 4: Display the instances to the user
 $instanceOptions = Select-EC2Instances -instances $instances
 
-# Step 6: Generate RDP files for all instances
+# Step 5: Generate RDP files for all instances
 Generate-RDPFiles -instanceOptions $instanceOptions
 
-# Step 7: Start SSM session on all instances in parallel
+# Step 6: Start SSM session on all instances in parallel
 Start-SSMSessionForInstances -instanceOptions $instanceOptions -region $region -accessKey $accesskey -secretKey $secretKey
