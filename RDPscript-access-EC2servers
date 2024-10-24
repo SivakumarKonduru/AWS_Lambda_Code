@@ -53,8 +53,9 @@ function Start-SSMSessionForInstances ($instances, $region, $accesskey, $secretK
 
 # Function to generate an RDP file for each instance
 function Generate-RDPFile ($instanceName, $localPort) {
+    # Modify the RDP file content to use the instance name instead of localhost
     $rdpFileContent = @"
-full address:s:localhost:$localPort
+full address:s:$instanceName:$localPort
 prompt for credentials:i:1
 administrative session:i:1
 screen mode id:i:2
