@@ -53,12 +53,13 @@ function Start-SSMSessionForInstances ($instances, $region, $accesskey, $secretK
 
 # Function to generate an RDP file for each instance
 function Generate-RDPFile ($instanceName, $localPort) {
-    # Use localhost in the RDP file content, as the actual port forwarding is done locally
+    # Use localhost in the RDP file content, but add a comment for clarity
     $rdpFileContent = @"
 full address:s:localhost:$localPort
 prompt for credentials:i:1
 administrative session:i:1
 screen mode id:i:2
+# Connecting to EC2 Instance: $instanceName
 "@
     $currentPath = Get-Location
     $rdpFilePath = "$currentPath\SSM_RDP_$($instanceName)_$($localPort).rdp"
