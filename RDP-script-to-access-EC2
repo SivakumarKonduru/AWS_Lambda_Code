@@ -9,13 +9,17 @@ Set-AWSCredential -AccessKey $accessKey -SecretKey $secretKey -StoreAs "SessionP
 Set-DefaultAWSRegion -Region $region
 
 # Function to retrieve tag conditions from the IAM policy
-function Get-TagConditionsFromPolicy ($iamUserName) {
+function Get-TagConditionsFromPolicy ($profileName) {
+    # Retrieve the currently authenticated IAM user
+    $iamUser = (Get-IAMUser -ProfileName $profileName).UserName
+    Write-Host "Current IAM User: $iamUser" # Verify correct IAM user
+
     # Retrieve user policies
-    $userPolicies = Get-IAMUserPolicyList -UserName $iamUserName -ProfileName "SessionProfile"
+    $userPolicies = Get-IAMUserPolicyList -UserName $iamUser -ProfileName $profileName
     $tags = @{}
 
     foreach ($policyName in $userPolicies.PolicyNames) {
-        $policyDocument = Get-IAMUserPolicy -UserName $iamUserName -PolicyName $policyName -ProfileName "SessionProfile"
+        $policyDocument = Get-IAMUserPolicy -UserName $iamUser -PolicyName $policyName -ProfileName $profileName
         if ($policyDocument.PolicyDocument.Contains("ec2:ResourceTag/AccessGroup")) {
             $accessGroup = $policyDocument.PolicyDocument.Statement.Condition."StringEquals"."ec2:ResourceTag/AccessGroup"
             $tags["AccessGroup"] = $accessGroup
@@ -26,12 +30,12 @@ function Get-TagConditionsFromPolicy ($iamUserName) {
         }
     }
 
-    return $tags
+    return @{ Tags = $tags; UserName = $iamUser }
 }
 
 # Function to get EC2 instances by matching tags
-function Get-EC2InstancesByTags ($region, $tags) {
-    $instances = Get-EC2Instance -Region $region -ProfileName "SessionProfile" | Where-Object {
+function Get-EC2InstancesByTags ($region, $tags, $profileName) {
+    $instances = Get-EC2Instance -Region $region -ProfileName $profileName | Where-Object {
         $instanceTags = $_.Instances.Tags | ForEach-Object { @{ $_.Key = $_.Value } }
         $tags.AllKeys | ForEach-Object { $instanceTags[$_] -eq $tags[$_] }
     }
@@ -59,15 +63,22 @@ function Start-SSMSession ($instanceId, $region, $localPort) {
 }
 
 # Main Execution
-$iamUser = (Get-IAMUser -ProfileName "SessionProfile").UserName
-$tags = Get-TagConditionsFromPolicy -iamUserName $iamUser
+# Retrieve tags and IAM user details from IAM policies
+$profileName = "SessionProfile"
+$userDetails = Get-TagConditionsFromPolicy -profileName $profileName
+$tags = $userDetails.Tags
+$iamUser = $userDetails.UserName
+
+Write-Host "Using IAM user: $iamUser"
+Write-Host "Tags to match: $($tags.Keys -join ', ')"
 
 if ($tags.Count -eq 0) {
     Write-Host "No tag conditions found for IAM user $iamUser"
     exit
 }
 
-$instances = Get-EC2InstancesByTags -region $region -tags $tags
+# Retrieve instances matching tags
+$instances = Get-EC2InstancesByTags -region $region -tags $tags -profileName $profileName
 if ($instances.Count -eq 0) {
     Write-Host "No EC2 instances found matching the tags specified in the IAM policy."
     exit
