@@ -1,117 +1,90 @@
-# Import AWS PowerShell Module
+# Import the AWS PowerShell Module
 Import-Module AWSPowerShell
 
-# AWS Credentials
-$accessKey = "YOUR_ACCESS_KEY"
-$secretKey = "YOUR_SECRET_KEY"
+# Set AWS Region and Credentials
+$accessKey = "YourAccessKey"
+$secretKey = "YourSecretKey"
 $region = "af-south-1"
-
-# Configure AWS credentials and region
-Set-AWSCredential -AccessKey $accessKey -SecretKey $secretKey -StoreAs "ABC-Access"
+Set-AWSCredential -AccessKey $accessKey -SecretKey $secretKey -StoreAs "SessionProfile"
 Set-DefaultAWSRegion -Region $region
 
-# Function to fetch EC2 instances by multiple tags
-function Get-EC2InstancesByTags {
-    param (
-        $region,
-        $tags
-    )
+# Function to retrieve tag conditions from the IAM policy
+function Get-TagConditionsFromPolicy ($iamUserName) {
+    # Retrieve user policies
+    $userPolicies = Get-IAMUserPolicyList -UserName $iamUserName -ProfileName "SessionProfile"
+    $tags = @{}
 
-    $instances = Get-EC2Instance -Region $region -ProfileName "ABC-Access" | Where-Object {
-        $instanceTags = $_.Instances.Tags
-
-        # Check if instance tags match the given tags
-        foreach ($tag in $tags.Keys) {
-            if (-not ($instanceTags | Where-Object { $_.Key -eq $tag -and $_.Value -eq $tags[$tag] })) {
-                return $false
-            }
+    foreach ($policyName in $userPolicies.PolicyNames) {
+        $policyDocument = Get-IAMUserPolicy -UserName $iamUserName -PolicyName $policyName -ProfileName "SessionProfile"
+        if ($policyDocument.PolicyDocument.Contains("ec2:ResourceTag/AccessGroup")) {
+            $accessGroup = $policyDocument.PolicyDocument.Statement.Condition."StringEquals"."ec2:ResourceTag/AccessGroup"
+            $tags["AccessGroup"] = $accessGroup
         }
-        return $true
+        if ($policyDocument.PolicyDocument.Contains("ec2:ResourceTag/Partner")) {
+            $partnerTag = $policyDocument.PolicyDocument.Statement.Condition."StringEquals"."ec2:ResourceTag/Partner"
+            $tags["Partner"] = $partnerTag
+        }
+    }
+
+    return $tags
+}
+
+# Function to get EC2 instances by matching tags
+function Get-EC2InstancesByTags ($region, $tags) {
+    $instances = Get-EC2Instance -Region $region -ProfileName "SessionProfile" | Where-Object {
+        $instanceTags = $_.Instances.Tags | ForEach-Object { @{ $_.Key = $_.Value } }
+        $tags.AllKeys | ForEach-Object { $instanceTags[$_] -eq $tags[$_] }
     }
     return $instances
 }
 
-# Step 1: Get the IAM User
-$iamUser = Get-IAMUser -ProfileName "ABC-Access"
-$iamUserName = $iamUser.UserName
-Write-Host "IAM User: $iamUserName"
-
-# Step 2: Extract dynamic tags based on IAM username structure (adjust pattern as needed)
-$tags = @{}
-
-# Define tag patterns based on naming convention
-$patternDictionary = @{
-    "AccessGroup" = "(?<=User_)\w+"   # Example: Extracts 'XYZ' if IAM user is 'User_XYZ'
-    "Partner" = "(?<=Partner_)\w+"    # Example: Extracts 'ABC' if IAM user is 'Partner_ABC'
-}
-
-# Dynamically match patterns in IAM username
-foreach ($tagKey in $patternDictionary.Keys) {
-    $pattern = $patternDictionary[$tagKey]
-    if ($iamUserName -match $pattern) {
-        $tags[$tagKey] = $matches[0]
-        Write-Host "Detected tag: $tagKey with value $($matches[0])"
-    }
-}
-
-# Step 3: Fetch EC2 instances based on the determined tags
-$instances = Get-EC2InstancesByTags -region $region -tags $tags
-
-if ($instances.Count -eq 0) {
-    Write-Host "No EC2 instances found with the specified tags for IAM user."
-    Exit
-}
-
-# Function to generate RDP files
-function Generate-RDPFile {
-    param ($instanceName, $localPort)
-
+# Function to generate an RDP file
+function Generate-RDPFile ($instanceName, $localPort) {
     $rdpFileContent = @"
 full address:s:localhost:$localPort
 prompt for credentials:i:1
 administrative session:i:1
 screen mode id:i:2
 "@
-    $currentPath = Get-Location
-    $rdpFilePath = "$currentPath\SSM_RDP_$($instanceName).rdp"
+    $rdpFilePath = "$(Get-Location)\SSM_RDP_$($instanceName).rdp"
     Set-Content -Path $rdpFilePath -Value $rdpFileContent
-    Write-Host "RDP file generated for instance '$instanceName' at $rdpFilePath"
+    Write-Host "RDP file generated at $rdpFilePath for instance: $instanceName"
 }
 
-# Function to start SSM session for RDP with port forwarding
-function Start-SSMSessionForInstance {
-    param ($instanceId, $region, $localPort)
-
+# Function to start the SSM session with port forwarding for RDP
+function Start-SSMSession ($instanceId, $region, $localPort) {
     $sessionCommand = "aws ssm start-session --target $instanceId --document-name AWS-StartPortForwardingSession --parameters portNumber=3389,localPortNumber=$localPort --region $region"
-    $ssmProcess = Start-Process powershell -NoNewWindow -ArgumentList "-Command $sessionCommand" -PassThru
+    Start-Process powershell -NoNewWindow -ArgumentList "-Command $sessionCommand"
     Write-Host "SSM session started for instance: $instanceId on local port $localPort"
-    return $ssmProcess
 }
 
 # Main Execution
-Write-Host "EC2 Instances tagged for IAM User $iamUserName:"
+$iamUser = (Get-IAMUser -ProfileName "SessionProfile").UserName
+$tags = Get-TagConditionsFromPolicy -iamUserName $iamUser
 
+if ($tags.Count -eq 0) {
+    Write-Host "No tag conditions found for IAM user $iamUser"
+    exit
+}
+
+$instances = Get-EC2InstancesByTags -region $region -tags $tags
+if ($instances.Count -eq 0) {
+    Write-Host "No EC2 instances found matching the tags specified in the IAM policy."
+    exit
+}
+
+# Loop through instances, generate RDP files, and start SSM sessions
 $startingPort = 9999
-$ssmProcesses = @()
-
 foreach ($instance in $instances) {
     $instanceId = $instance.Instances.InstanceId
     $instanceName = ($instance.Instances.Tags | Where-Object { $_.Key -eq 'Name' }).Value
+
     Write-Host "Instance Name: $instanceName - Instance ID: $instanceId"
 
-    # Generate RDP file
     Generate-RDPFile -instanceName $instanceName -localPort $startingPort
+    Start-SSMSession -instanceId $instanceId -region $region -localPort $startingPort
 
-    # Start SSM session
-    $ssmProcesses += Start-SSMSessionForInstance -instanceId $instanceId -region $region -localPort $startingPort
-
-    # Increment local port for next instance
     $startingPort++
 }
 
-# Wait for all SSM sessions to complete
-foreach ($ssmProcess in $ssmProcesses) {
-    $ssmProcess.WaitForExit()
-}
-
-Write-Host "RDP files have been generated for all instances."
+Write-Host "All specified RDP files generated and SSM sessions initiated."
