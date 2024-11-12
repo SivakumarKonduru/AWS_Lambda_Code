@@ -8,12 +8,17 @@ $region = 'us-west-2'
 $accessGroupTagValue = 'your_access_group_value'
 $partnerTagValue = 'your_partner_value'
 
+# Define IAM credentials (replace with your IAM credentials)
+$accessKey = 'YOUR_ACCESS_KEY'
+$secretKey = 'YOUR_SECRET_KEY'
+#$sessionToken = 'YOUR_SESSION_TOKEN'  # Only if using temporary credentials
+
 # Starting port for port forwarding
 $startingPort = 9999
 $currentPort = $startingPort
 
 # Retrieve instances that match the tag conditions
-$instances = Get-EC2Instance -Region $region | Where-Object {
+$instances = Get-EC2Instance -Region $region -AccessKey $accessKey -SecretKey $secretKey | Where-Object {
     $_.Instances.Tags | Where-Object { $_.Key -eq "AccessGroup" -and $_.Value -eq $accessGroupTagValue } -and
     $_.Instances.Tags | Where-Object { $_.Key -eq "partner" -and $_.Value -eq $partnerTagValue }
 }
@@ -30,7 +35,7 @@ if ($instances.Instances) {
         $ssmSession = Start-SSMSession -Target $instanceId -DocumentName AWS-StartPortForwardingSession -Parameters @{
             'portNumber' = 3389
             'localPortNumber' = $currentPort
-        }
+        } -AccessKey $accessKey -SecretKey $secretKey -SessionToken $sessionToken
 
         # Generate RDP file content with forwarded port
         $rdpFilePath = "$env:USERPROFILE\Downloads\$instanceId.rdp"
