@@ -1,101 +1,46 @@
-# Import the AWS PowerShell Module
+# Import the AWS PowerShell module
 Import-Module AWSPowerShell
 
-# Set AWS Region and Credentials
-$accessKey = "YourAccessKey"
-$secretKey = "YourSecretKey"
-$region = "af-south-1"
-Set-AWSCredential -AccessKey $accessKey -SecretKey $secretKey -StoreAs "SessionProfile"
-Set-DefaultAWSRegion -Region $region
+# Define the AWS region (update with your region)
+$region = 'us-west-2'
 
-# Function to retrieve tag conditions from the IAM policy
-function Get-TagConditionsFromPolicy ($profileName) {
-    # Retrieve the currently authenticated IAM user
-    $iamUser = (Get-IAMUser -ProfileName $profileName).UserName
-    Write-Host "Current IAM User: $iamUser" # Verify correct IAM user
+# Define tag values to match
+$accessGroupTagValue = 'your_access_group_value'
+$partnerTagValue = 'your_partner_value'
 
-    # Retrieve user policies
-    $userPolicies = Get-IAMUserPolicyList -UserName $iamUser -ProfileName $profileName
-    $tags = @{}
-
-    foreach ($policyName in $userPolicies.PolicyNames) {
-        $policyDocument = Get-IAMUserPolicy -UserName $iamUser -PolicyName $policyName -ProfileName $profileName
-        if ($policyDocument.PolicyDocument.Contains("ec2:ResourceTag/AccessGroup")) {
-            $accessGroup = $policyDocument.PolicyDocument.Statement.Condition."StringEquals"."ec2:ResourceTag/AccessGroup"
-            $tags["AccessGroup"] = $accessGroup
-        }
-        if ($policyDocument.PolicyDocument.Contains("ec2:ResourceTag/Partner")) {
-            $partnerTag = $policyDocument.PolicyDocument.Statement.Condition."StringEquals"."ec2:ResourceTag/Partner"
-            $tags["Partner"] = $partnerTag
-        }
-    }
-
-    return @{ Tags = $tags; UserName = $iamUser }
-}
-
-# Function to get EC2 instances by matching tags
-function Get-EC2InstancesByTags ($region, $tags, $profileName) {
-    $instances = Get-EC2Instance -Region $region -ProfileName $profileName | Where-Object {
-        $instanceTags = $_.Instances.Tags | ForEach-Object { @{ $_.Key = $_.Value } }
-        $tags.AllKeys | ForEach-Object { $instanceTags[$_] -eq $tags[$_] }
-    }
-    return $instances
-}
-
-# Function to generate an RDP file
-function Generate-RDPFile ($instanceName, $localPort) {
-    $rdpFileContent = @"
-full address:s:localhost:$localPort
-prompt for credentials:i:1
-administrative session:i:1
-screen mode id:i:2
-"@
-    $rdpFilePath = "$(Get-Location)\SSM_RDP_$($instanceName).rdp"
-    Set-Content -Path $rdpFilePath -Value $rdpFileContent
-    Write-Host "RDP file generated at $rdpFilePath for instance: $instanceName"
-}
-
-# Function to start the SSM session with port forwarding for RDP
-function Start-SSMSession ($instanceId, $region, $localPort) {
-    $sessionCommand = "aws ssm start-session --target $instanceId --document-name AWS-StartPortForwardingSession --parameters portNumber=3389,localPortNumber=$localPort --region $region"
-    Start-Process powershell -NoNewWindow -ArgumentList "-Command $sessionCommand"
-    Write-Host "SSM session started for instance: $instanceId on local port $localPort"
-}
-
-# Main Execution
-# Retrieve tags and IAM user details from IAM policies
-$profileName = "SessionProfile"
-$userDetails = Get-TagConditionsFromPolicy -profileName $profileName
-$tags = $userDetails.Tags
-$iamUser = $userDetails.UserName
-
-Write-Host "Using IAM user: $iamUser"
-Write-Host "Tags to match: $($tags.Keys -join ', ')"
-
-if ($tags.Count -eq 0) {
-    Write-Host "No tag conditions found for IAM user $iamUser"
-    exit
-}
-
-# Retrieve instances matching tags
-$instances = Get-EC2InstancesByTags -region $region -tags $tags -profileName $profileName
-if ($instances.Count -eq 0) {
-    Write-Host "No EC2 instances found matching the tags specified in the IAM policy."
-    exit
-}
-
-# Loop through instances, generate RDP files, and start SSM sessions
+# Starting port for port forwarding
 $startingPort = 9999
-foreach ($instance in $instances) {
-    $instanceId = $instance.Instances.InstanceId
-    $instanceName = ($instance.Instances.Tags | Where-Object { $_.Key -eq 'Name' }).Value
+$currentPort = $startingPort
 
-    Write-Host "Instance Name: $instanceName - Instance ID: $instanceId"
-
-    Generate-RDPFile -instanceName $instanceName -localPort $startingPort
-    Start-SSMSession -instanceId $instanceId -region $region -localPort $startingPort
-
-    $startingPort++
+# Retrieve instances that match the tag conditions
+$instances = Get-EC2Instance -Region $region | Where-Object {
+    $_.Instances.Tags | Where-Object { $_.Key -eq "AccessGroup" -and $_.Value -eq $accessGroupTagValue } -and
+    $_.Instances.Tags | Where-Object { $_.Key -eq "partner" -and $_.Value -eq $partnerTagValue }
 }
 
-Write-Host "All specified RDP files generated and SSM sessions initiated."
+# Check if any instances match the criteria
+if ($instances.Instances) {
+    Write-Output "Found the following instances matching the specified tags:"
+    foreach ($instance in $instances.Instances) {
+        $instanceId = $instance.InstanceId
+        $instanceName = ($instance.Tags | Where-Object { $_.Key -eq 'Name' }).Value
+
+        # Start SSM session with port forwarding
+        Write-Output "Starting SSM session for instance $instanceId on local port $currentPort"
+        $ssmSession = Start-SSMSession -Target $instanceId -DocumentName AWS-StartPortForwardingSession -Parameters @{
+            'portNumber' = 3389
+            'localPortNumber' = $currentPort
+        }
+
+        # Generate RDP file content with forwarded port
+        $rdpFilePath = "$env:USERPROFILE\Downloads\$instanceId.rdp"
+        $rdpContent = "full address:s:localhost:$currentPort`nusername:s:Administrator"
+        Set-Content -Path $rdpFilePath -Value $rdpContent -Encoding ASCII
+        Write-Output "RDP file created for instance $instanceId at $rdpFilePath (Port: $currentPort)"
+
+        # Increment port for the next instance
+        $currentPort++
+    }
+} else {
+    Write-Output "No instances found with the specified tags."
+}
